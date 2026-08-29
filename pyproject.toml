@@ -1,0 +1,32 @@
+[project]
+name = "strm-proxy"
+version = "0.1.0"
+description = "Small HLS resolver/proxy demo for STRM-compatible media players"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "httpx",
+    "pycryptodome",
+    "sqlalchemy",
+    "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+strm-proxy = "strm_proxy.app:run"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["strm_proxy*"]
