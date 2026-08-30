@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import secrets
 from typing import Annotated, cast
 
 import httpx
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from .catalog import XlysCatalog
 from .config import AppSettings, DavSettings
-from .database import MovieRepository
-from .library import MovieLibrary
+from .database import MediaRepository
+from .library import MediaLibrary
 from .xlys import XlysResolver
 
 
@@ -21,8 +23,8 @@ class AppServices:
     http: httpx.AsyncClient
     resolver: XlysResolver
     catalog: XlysCatalog
-    movie_repository: MovieRepository
-    movie_library: MovieLibrary
+    media_repository: MediaRepository
+    media_library: MediaLibrary
 
 
 def set_app_services(application: FastAPI, services: AppServices) -> None:
@@ -79,15 +81,40 @@ def get_catalog(services: ServicesDep) -> XlysCatalog:
 CatalogDep = Annotated[XlysCatalog, Depends(get_catalog)]
 
 
-def get_movie_repository(services: ServicesDep) -> MovieRepository:
-    return services.movie_repository
+def get_media_repository(services: ServicesDep) -> MediaRepository:
+    return services.media_repository
 
 
-MovieRepositoryDep = Annotated[MovieRepository, Depends(get_movie_repository)]
+MediaRepositoryDep = Annotated[MediaRepository, Depends(get_media_repository)]
 
 
-def get_movie_library(services: ServicesDep) -> MovieLibrary:
-    return services.movie_library
+def get_media_library(services: ServicesDep) -> MediaLibrary:
+    return services.media_library
 
 
-MovieLibraryDep = Annotated[MovieLibrary, Depends(get_movie_library)]
+MediaLibraryDep = Annotated[MediaLibrary, Depends(get_media_library)]
+
+
+_admin_basic_auth = HTTPBasic(auto_error=False)
+
+
+def require_admin_auth(
+    settings: DavSettingsDep,
+    credentials: Annotated[
+        HTTPBasicCredentials | None,
+        Depends(_admin_basic_auth),
+    ],
+) -> None:
+    if credentials is not None and secrets.compare_digest(
+        credentials.username,
+        settings.username,
+    ) and secrets.compare_digest(credentials.password, settings.password):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Management authentication required",
+        headers={"WWW-Authenticate": 'Basic realm="strm-proxy admin"'},
+    )
+
+
+AdminAuthDep = Annotated[None, Depends(require_admin_auth)]

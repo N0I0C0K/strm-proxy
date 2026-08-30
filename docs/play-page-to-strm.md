@@ -13,10 +13,10 @@ https://www.xlys02.com/play/27062-0.htm
 写进 `.strm` 的不是上游站点返回的临时 M3U8 地址，而是本服务提供的稳定入口：
 
 ```text
-http://192.168.1.11:8787/hls.m3u8?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm&line=0&proxy_segments=true
+http://192.168.1.11:8787/hls.m3u8?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm&line=0
 ```
 
-爆米花请求这个 URL 时，服务才去解析播放页、取得当前线路、解包 M3U8，并把媒体分片改写到本地代理。因此上游线路变化时通常不需要重新生成 `.strm` 文件。
+爆米花请求这个 URL 时，服务才去解析播放页、取得当前线路并解包 M3U8。是否把媒体分片改写到本地代理，由服务启动时的 `STRM_PROXY_PROXY_SEGMENTS` 全局配置决定，不会固化进 `.strm`。因此上游线路或代理模式变化时通常不需要重新生成 `.strm` 文件。
 
 完整数据流如下：
 
@@ -28,8 +28,8 @@ http://192.168.1.11:8787/hls.m3u8?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2
   -> 计算动态签名，请求 /lines
   -> 选择一条包装过的 M3U8 线路
   -> 去掉包装并解压成标准 #EXTM3U
-  -> 把 TS 地址改写为本地 /segment 代理
-  -> 去掉 TS 的伪装前缀并流式返回 MPEG-TS
+  -> 根据全局配置决定是否改写 TS 地址
+  -> 代理开启时，通过 /segment 去掉 TS 前缀并流式返回 MPEG-TS
 ```
 
 ## 1. 从播放页面提取标识
@@ -141,7 +141,7 @@ https://vod.xl01.me/hls/
 
 ## 5. 为什么还要代理 TS 分片
 
-当前站点的 `.ts` 响应同样带有伪装前缀，不能保证播放器直接识别。因此 `/hls.m3u8` 默认把每个 TS 地址改写为：
+当前站点的 `.ts` 响应同样带有伪装前缀，不能保证播放器直接识别。当全局配置 `STRM_PROXY_PROXY_SEGMENTS=true` 时，`/hls.m3u8` 把每个 TS 地址改写为：
 
 ```text
 http://<本机>:8787/segment?url=<上游TS地址>&referer=<播放页>
@@ -150,6 +150,8 @@ http://<本机>:8787/segment?url=<上游TS地址>&referer=<播放页>
 `/segment` 只允许访问配置中的分片域名，避免成为任意 URL 代理。读取上游响应后，它会寻找 MPEG-TS 的同步位置：连续三个 `0x47` 同步字节之间必须各相隔 `188` 字节。找到后丢弃前面的包装数据，从第一个 TS 包开始流式返回，响应类型为 `video/mp2t`。
 
 因此这里处理的是站点自定义包装，不是 DRM 解密。本次对示例线路的验证中，解包后的清单没有 `#EXT-X-KEY` 或 `KEYFORMAT`，也没有观察到浏览器 EME/许可证交换；若以后出现这些信号，系统应报告不支持，而不是尝试绕过 DRM。
+
+当 `STRM_PROXY_PROXY_SEGMENTS=false` 时，标准 M3U8 中保留上游 TS 直连地址，TV 不再调用 `/segment`。切换该环境变量需要重启服务，但 STRM URL 不变。
 
 ## 6. STRM 内容如何生成
 
@@ -184,7 +186,7 @@ GET /segment?...        -> 返回去除包装后的 MPEG-TS
 
 页面解析结果和解包后的原始 M3U8 默认缓存 300 秒。缓存可以减少爆米花扫描、媒体探测和正式播放连续触发的上游请求。
 
-缓存中保存的是上游解析结果，不是带某个本机地址的最终清单。每次返回时仍会根据当前请求重新生成 `/segment` URL，所以从 `127.0.0.1` 测试和从局域网 IP 播放不会互相污染。
+缓存中保存的是上游解析结果，不是带某个本机地址的最终清单。代理开启时，每次返回仍会根据当前请求重新生成 `/segment` URL，所以从 `127.0.0.1` 测试和从局域网 IP 播放不会互相污染。
 
 需要注意：上游的签名算法、包装长度、字段名称和 CDN 域名都属于站点私有实现，未来可能变化。相应适配应限制在 `xlys.py` 和 `hls.py`，不应影响 WebDAV 或 STRM 接口。
 
@@ -196,4 +198,4 @@ GET /segment?...        -> 返回去除包装后的 MPEG-TS
 .\scripts\verify-webdav-e2e.ps1 -BaseUrl http://192.168.1.11:8787
 ```
 
-脚本会依次验证 WebDAV 发现、STRM 内容、HLS 头和首个 MPEG-TS 分片。成功时首个分片应以 `0x47` 开始。
+脚本会依次验证 WebDAV 发现、STRM 内容、HLS 头和首个分片。代理开启时首个分片应以 MPEG-TS 同步字节 `0x47` 开始；直连模式下应保留上游 PNG 包装，并报告 `SegmentMode=direct`。

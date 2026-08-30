@@ -17,7 +17,7 @@ from .models import ResolvedPage, ResolverError, StreamCandidate
 
 _PID_PATTERN = re.compile(r"\bvar\s+pid\s*=\s*(\d+)\s*;")
 _TITLE_PATTERN = re.compile(r"\bvod_name\s*=\s*([\"'])(.*?)\1")
-_PLAY_PATH_PATTERN = re.compile(r"^/play/\d+-\d+\.htm$")
+_PLAY_PATH_PATTERN = re.compile(r"^/(?:[^/?#]+/)?play/\d+-\d+\.htm$")
 _UNICODE_ESCAPE_PATTERN = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 ManifestResult = tuple[ResolvedPage, StreamCandidate, str]
@@ -39,7 +39,10 @@ def validate_page_url(page_url: str, allowed_hosts: Iterable[str]) -> str:
     if parsed.username or parsed.password or parsed.port:
         raise ResolverError("Credentials and custom ports are not allowed")
     if not _PLAY_PATH_PATTERN.fullmatch(parsed.path):
-        raise ResolverError("Expected a page URL like /play/27062-0.htm")
+        raise ResolverError(
+            "Expected a page URL like /play/27062-0.htm "
+            "or /guoju/play/24358-0.htm"
+        )
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 

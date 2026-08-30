@@ -53,6 +53,12 @@ def test_rejects_non_target_urls() -> None:
         validate_page_url(PAGE_URL.replace("www.xlys02.com", "example.com"), ("www.xlys02.com",))
 
 
+def test_accepts_legacy_category_play_url() -> None:
+    url = "https://www.xlys02.com/guoju/play/24358-0.htm"
+
+    assert validate_page_url(url, ("www.xlys02.com",)) == url
+
+
 def test_resolver_caches_page_and_manifest() -> None:
     calls: Counter[str] = Counter()
     manifest = "#EXTM3U\n#EXTINF:6,\nabc.ts\n#EXT-X-ENDLIST\n"

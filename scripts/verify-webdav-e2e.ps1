@@ -68,8 +68,19 @@ try {
     $http.Dispose()
 }
 $magic = ($segment[0..3] | ForEach-Object { $_.ToString('X2') }) -join ' '
-if ($segment[0] -ne 0x47) {
-    throw "Expected MPEG-TS sync byte 47, got $magic"
+$segmentMode = if ($segmentUrl -match '/segment\?') { 'proxy' } else { 'direct' }
+if ($segmentMode -eq 'proxy' -and $segment[0] -ne 0x47) {
+    throw "Expected proxied MPEG-TS sync byte 47, got $magic"
+}
+if (
+    $segmentMode -eq 'direct' -and
+    ($segment.Length -lt 8 -or
+     $segment[0] -ne 0x89 -or
+     $segment[1] -ne 0x50 -or
+     $segment[2] -ne 0x4E -or
+     $segment[3] -ne 0x47)
+) {
+    throw "Expected direct upstream PNG wrapper, got $magic"
 }
 
 [pscustomobject]@{
@@ -79,6 +90,7 @@ if ($segment[0] -ne 0x47) {
     SelectedStrmHref = $strmHref
     StrmUrl = $strmUrl
     HlsHeader = $manifest[0]
+    SegmentMode = $segmentMode
     FirstSegmentBytes = $segment.Length
     FirstSegmentMagic = $magic
 }

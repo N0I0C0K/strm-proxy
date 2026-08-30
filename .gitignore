@@ -11,3 +11,5 @@ wheels/
 
 # Runtime SQLite data
 data/*.db*
+
+*.env

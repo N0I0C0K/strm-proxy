@@ -12,11 +12,10 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from .config import DavSettings
-from .database import Movie
-from .dependencies import DavSettingsDep, MovieLibraryDep
-from .library import MovieLibrary
+from .database import Episode, MediaItem
+from .dependencies import DavSettingsDep, MediaLibraryDep
+from .library import MediaLibrary
 from .routes import build_manifest_url
-
 
 router = APIRouter(include_in_schema=False)
 
@@ -56,7 +55,7 @@ async def webdav_root(request: Request, settings: DavSettingsDep) -> Response:
 async def webdav_file(
     request: Request,
     settings: DavSettingsDep,
-    library: MovieLibraryDep,
+    library: MediaLibraryDep,
     file_path: str,
 ) -> Response:
     if request.method == "OPTIONS":
@@ -86,26 +85,102 @@ async def webdav_file(
     series_path = settings.series_directory
     if file_path.rstrip("/") == series_path:
         if request.method == "PROPFIND":
-            return _propfind_empty_collection(series_path)
+            series = (
+                await library.visible_series()
+                if request.headers.get("depth", "1") != "0"
+                else ()
+            )
+            return _propfind_series_root(settings, series)
         if request.method == "HEAD":
             return Response(headers=DAV_HEADERS, media_type="text/plain")
         return PlainTextResponse(
-            "Read-only series catalog: 0 files\n",
+            f"Read-only series catalog: {len(await library.visible_series())} shows\n",
             headers=DAV_HEADERS,
         )
     if file_path.startswith(f"{series_path}/"):
-        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+        return await _series_resource(
+            request,
+            settings,
+            library,
+            file_path[len(series_path) + 1 :].strip("/"),
+        )
 
     prefix = f"{catalog_path}/"
     if not file_path.startswith(prefix) or "/" in file_path[len(prefix) :]:
         raise HTTPException(status_code=404, detail="WebDAV resource not found")
     filename = file_path[len(prefix) :]
-    movie = await library.find_visible_by_filename(filename)
+    movie = await library.find_visible_movie_by_filename(filename)
     if movie is None:
         raise HTTPException(status_code=404, detail="WebDAV resource not found")
     if request.method == "PROPFIND":
         return _propfind_catalog_file(settings, movie, request, library)
-    return _strm_response(request, library.play_url(movie))
+    return _strm_response(request, library.movie_play_url(movie))
+
+
+async def _series_resource(
+    request: Request,
+    settings: DavSettings,
+    library: MediaLibrary,
+    relative_path: str,
+) -> Response:
+    parts = relative_path.split("/") if relative_path else []
+    if not parts:
+        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+    series = await library.find_visible_series_by_name(parts[0])
+    if series is None:
+        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+    season_directory = library.series_season_directory(series)
+
+    if len(parts) == 1:
+        if request.method == "PROPFIND":
+            return _propfind_series_item(
+                settings,
+                series,
+                season_directory,
+                include_child=request.headers.get("depth", "1") != "0",
+            )
+        if request.method == "HEAD":
+            return Response(headers=DAV_HEADERS, media_type="text/plain")
+        return PlainTextResponse(
+            f"Read-only series: {series.dav_name}\n",
+            headers=DAV_HEADERS,
+        )
+
+    if parts[1] != season_directory:
+        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+    episodes = library.episodes(series)
+    if len(parts) == 2:
+        if request.method == "PROPFIND":
+            return _propfind_series_season(
+                request,
+                settings,
+                series,
+                season_directory,
+                episodes,
+                library,
+            )
+        if request.method == "HEAD":
+            return Response(headers=DAV_HEADERS, media_type="text/plain")
+        return PlainTextResponse(
+            f"Read-only season: {len(episodes)} episodes\n",
+            headers=DAV_HEADERS,
+        )
+
+    if len(parts) != 3:
+        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+    episode = library.find_episode_by_filename(series, parts[2])
+    if episode is None:
+        raise HTTPException(status_code=404, detail="WebDAV resource not found")
+    if request.method == "PROPFIND":
+        return _propfind_episode_file(
+            request,
+            settings,
+            series,
+            season_directory,
+            episode,
+            library,
+        )
+    return _strm_response(request, library.episode_play_url(series, episode))
 
 
 def _strm_response(request: Request, page_url: str) -> Response:
@@ -133,9 +208,9 @@ def _authenticate(request: Request, settings: DavSettings) -> None:
             username, password = decoded.split(":", 1)
         except (ValueError, UnicodeDecodeError):
             username, password = "", ""
-        if secrets.compare_digest(username, settings.username) and secrets.compare_digest(
-            password, settings.password
-        ):
+        if secrets.compare_digest(
+            username, settings.username
+        ) and secrets.compare_digest(password, settings.password):
             return
     raise HTTPException(
         status_code=401,
@@ -182,16 +257,131 @@ def _propfind_root(
     return _multistatus_response(multistatus)
 
 
-def _propfind_empty_collection(directory: str) -> Response:
+def _propfind_series_root(
+    settings: DavSettings,
+    series_items: tuple[MediaItem, ...],
+) -> Response:
     multistatus = _multistatus()
+    root_href = f"/dav/{quote(settings.series_directory, safe='')}/"
     _append_response(
         multistatus,
-        href=f"/dav/{quote(directory, safe='')}/",
-        display_name=directory,
+        href=root_href,
+        display_name=settings.series_directory,
         modified=DAV_LAST_MODIFIED,
         collection=True,
     )
+    for series in series_items:
+        _append_response(
+            multistatus,
+            href=root_href + quote(series.dav_name, safe="") + "/",
+            display_name=series.dav_name,
+            modified=_dav_modified(series.source_updated_on),
+            collection=True,
+        )
     return _multistatus_response(multistatus)
+
+
+def _propfind_series_item(
+    settings: DavSettings,
+    series: MediaItem,
+    season_directory: str,
+    *,
+    include_child: bool,
+) -> Response:
+    multistatus = _multistatus()
+    href = _series_href(settings, series)
+    _append_response(
+        multistatus,
+        href=href,
+        display_name=series.dav_name,
+        modified=_dav_modified(series.source_updated_on),
+        collection=True,
+    )
+    if include_child:
+        _append_response(
+            multistatus,
+            href=href + quote(season_directory, safe="") + "/",
+            display_name=season_directory,
+            modified=_dav_modified(series.source_updated_on),
+            collection=True,
+        )
+    return _multistatus_response(multistatus)
+
+
+def _propfind_series_season(
+    request: Request,
+    settings: DavSettings,
+    series: MediaItem,
+    season_directory: str,
+    episodes: tuple[Episode, ...],
+    library: MediaLibrary,
+) -> Response:
+    multistatus = _multistatus()
+    href = _series_href(settings, series) + quote(season_directory, safe="") + "/"
+    _append_response(
+        multistatus,
+        href=href,
+        display_name=season_directory,
+        modified=_dav_modified(series.source_updated_on),
+        collection=True,
+    )
+    if request.headers.get("depth", "1") != "0":
+        for episode in episodes:
+            filename = library.episode_filename(series, episode)
+            content = _strm_content_for_page(
+                request,
+                library.episode_play_url(series, episode),
+            )
+            _append_response(
+                multistatus,
+                href=href + quote(filename, safe=""),
+                display_name=filename,
+                modified=_dav_modified(series.source_updated_on),
+                collection=False,
+                content_length=len(content.encode("utf-8")),
+                etag=_etag(content),
+            )
+    return _multistatus_response(multistatus)
+
+
+def _propfind_episode_file(
+    request: Request,
+    settings: DavSettings,
+    series: MediaItem,
+    season_directory: str,
+    episode: Episode,
+    library: MediaLibrary,
+) -> Response:
+    multistatus = _multistatus()
+    filename = library.episode_filename(series, episode)
+    content = _strm_content_for_page(
+        request,
+        library.episode_play_url(series, episode),
+    )
+    href = (
+        _series_href(settings, series)
+        + quote(season_directory, safe="")
+        + "/"
+        + quote(filename, safe="")
+    )
+    _append_response(
+        multistatus,
+        href=href,
+        display_name=filename,
+        modified=_dav_modified(series.source_updated_on),
+        collection=False,
+        content_length=len(content.encode("utf-8")),
+        etag=_etag(content),
+    )
+    return _multistatus_response(multistatus)
+
+
+def _series_href(settings: DavSettings, series: MediaItem) -> str:
+    return (
+        f"/dav/{quote(settings.series_directory, safe='')}/"
+        + quote(series.dav_name, safe="")
+        + "/"
+    )
 
 
 def _propfind_legacy_file(request: Request, settings: DavSettings) -> Response:
@@ -212,8 +402,8 @@ def _propfind_legacy_file(request: Request, settings: DavSettings) -> Response:
 def _propfind_catalog(
     request: Request,
     settings: DavSettings,
-    movies: tuple[Movie, ...],
-    library: MovieLibrary,
+    movies: tuple[MediaItem, ...],
+    library: MediaLibrary,
 ) -> Response:
     multistatus = _multistatus()
     directory_href = f"/dav/{quote(settings.catalog_directory, safe='')}/"
@@ -227,12 +417,12 @@ def _propfind_catalog(
     for movie in movies:
         content = _strm_content_for_page(
             request,
-            library.play_url(movie),
+            library.movie_play_url(movie),
         )
         _append_response(
             multistatus,
-            href=directory_href + quote(movie.dav_filename, safe=""),
-            display_name=movie.dav_filename,
+            href=directory_href + quote(movie.dav_name, safe=""),
+            display_name=movie.dav_name,
             modified=_dav_modified(movie.source_updated_on),
             collection=False,
             content_length=len(content.encode("utf-8")),
@@ -243,23 +433,22 @@ def _propfind_catalog(
 
 def _propfind_catalog_file(
     settings: DavSettings,
-    movie: Movie,
+    movie: MediaItem,
     request: Request,
-    library: MovieLibrary,
+    library: MediaLibrary,
 ) -> Response:
     multistatus = _multistatus()
     content = _strm_content_for_page(
         request,
-        library.play_url(movie),
+        library.movie_play_url(movie),
     )
-    href = (
-        f"/dav/{quote(settings.catalog_directory, safe='')}/"
-        + quote(movie.dav_filename, safe="")
+    href = f"/dav/{quote(settings.catalog_directory, safe='')}/" + quote(
+        movie.dav_name, safe=""
     )
     _append_response(
         multistatus,
         href=href,
-        display_name=movie.dav_filename,
+        display_name=movie.dav_name,
         modified=_dav_modified(movie.source_updated_on),
         collection=False,
         content_length=len(content.encode("utf-8")),

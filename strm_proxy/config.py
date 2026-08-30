@@ -47,11 +47,15 @@ class DavSettings:
 class AppSettings:
     host: str = "0.0.0.0"
     port: int = 8787
+    proxy_segments: bool = True
     user_agent: str = DEFAULT_USER_AGENT
     request_timeout_seconds: float = 20.0
     connect_timeout_seconds: float = 10.0
     cache_ttl_seconds: float = 300.0
-    catalog_limit: int = 100
+    discovery_recent_limit: int = 50
+    discovery_year_span: int = 4
+    douban_rating_threshold: float = 7.0
+    series_douban_rating_threshold: float = 8.0
     catalog_cache_ttl_seconds: float = 1800.0
     database_path: str = "data/strm-proxy.db"
     allowed_page_hosts: tuple[str, ...] = ("www.xlys02.com", "xlys02.com")
@@ -63,8 +67,23 @@ class AppSettings:
         settings = cls(
             host=os.getenv("STRM_PROXY_HOST", "0.0.0.0"),
             port=int(os.getenv("STRM_PROXY_PORT", "8787")),
+            proxy_segments=_environment_bool(
+                "STRM_PROXY_PROXY_SEGMENTS",
+                default=True,
+            ),
             cache_ttl_seconds=float(os.getenv("STRM_PROXY_CACHE_TTL", "300")),
-            catalog_limit=int(os.getenv("STRM_PROXY_CATALOG_LIMIT", "100")),
+            discovery_recent_limit=int(
+                os.getenv("STRM_PROXY_DISCOVERY_RECENT_LIMIT", "50")
+            ),
+            discovery_year_span=int(
+                os.getenv("STRM_PROXY_DISCOVERY_YEAR_SPAN", "4")
+            ),
+            douban_rating_threshold=float(
+                os.getenv("STRM_PROXY_DOUBAN_RATING_THRESHOLD", "7.0")
+            ),
+            series_douban_rating_threshold=float(
+                os.getenv("STRM_PROXY_SERIES_DOUBAN_RATING_THRESHOLD", "8.0")
+            ),
             catalog_cache_ttl_seconds=float(
                 os.getenv("STRM_PROXY_CATALOG_CACHE_TTL", "1800")
             ),
@@ -92,10 +111,38 @@ class AppSettings:
             raise RuntimeError("STRM_PROXY_PORT must be between 1 and 65535")
         if self.cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CACHE_TTL must be positive")
-        if not 1 <= self.catalog_limit <= 500:
-            raise RuntimeError("STRM_PROXY_CATALOG_LIMIT must be between 1 and 500")
+        if not 1 <= self.discovery_recent_limit <= 500:
+            raise RuntimeError(
+                "STRM_PROXY_DISCOVERY_RECENT_LIMIT must be between 1 and 500"
+            )
+        if not 1 <= self.discovery_year_span <= 10:
+            raise RuntimeError(
+                "STRM_PROXY_DISCOVERY_YEAR_SPAN must be between 1 and 10"
+            )
+        if not 0 <= self.douban_rating_threshold <= 10:
+            raise RuntimeError(
+                "STRM_PROXY_DOUBAN_RATING_THRESHOLD must be between 0 and 10"
+            )
+        if not 0 <= self.series_douban_rating_threshold <= 10:
+            raise RuntimeError(
+                "STRM_PROXY_SERIES_DOUBAN_RATING_THRESHOLD must be between 0 and 10"
+            )
         if self.catalog_cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CATALOG_CACHE_TTL must be positive")
         if not self.database_path.strip():
             raise RuntimeError("STRM_PROXY_DATABASE_PATH must not be empty")
         self.dav.validate()
+
+
+def _environment_bool(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of true/false, 1/0, yes/no, or on/off"
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
@@ -8,12 +9,14 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
+from .admin import router as admin_router
 from .config import AppSettings
 from .catalog import XlysCatalog
-from .database import create_movie_repository
+from .database import create_media_repository
 from .dependencies import AppServices, set_app_services
-from .library import MovieLibrary
+from .library import MediaLibrary
 from .models import ResolverError
 from .routes import router as api_router
 from .webdav import router as webdav_router
@@ -26,7 +29,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        repository = create_movie_repository(settings.database_path)
+        repository = create_media_repository(settings.database_path)
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(
@@ -47,13 +50,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             )
             catalog = XlysCatalog(
                 client,
-                limit=settings.catalog_limit,
+                recent_limit=settings.discovery_recent_limit,
+                year_span=settings.discovery_year_span,
+                movie_rating_threshold=settings.douban_rating_threshold,
+                series_rating_threshold=(
+                    settings.series_douban_rating_threshold
+                ),
                 cache_ttl_seconds=settings.catalog_cache_ttl_seconds,
             )
-            movie_library = MovieLibrary(
+            media_library = MediaLibrary(
                 repository,
                 catalog,
-                auto_limit=settings.catalog_limit,
             )
             set_app_services(
                 application,
@@ -62,8 +69,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     http=client,
                     resolver=resolver,
                     catalog=catalog,
-                    movie_repository=repository,
-                    movie_library=movie_library,
+                    media_repository=repository,
+                    media_library=media_library,
                 ),
             )
             try:
@@ -83,7 +90,16 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     application.include_router(api_router)
+    application.include_router(admin_router)
     application.include_router(webdav_router)
+
+    frontend_dist = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        application.mount(
+            "/admin",
+            StaticFiles(directory=frontend_dist, html=True),
+            name="admin-ui",
+        )
 
     @application.exception_handler(ResolverError)
     async def resolver_error_handler(

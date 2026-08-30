@@ -4,9 +4,10 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
-from strm_proxy.catalog import CatalogMovie
+from strm_proxy.catalog import CatalogEntry
 from strm_proxy.dependencies import get_app_services
 from strm_proxy.config import AppSettings
+from strm_proxy.detail import parse_xlys_detail
 
 
 def _app():
@@ -46,19 +47,10 @@ def test_webdav_root_lists_media_categories_and_keeps_legacy_strm_direct() -> No
         stream_file = client.get("/dav/痴迷.strm", headers=_auth())
         assert stream_file.status_code == 200
         assert stream_file.text.startswith("http://192.168.1.20:8787/hls.m3u8?")
-        assert "proxy_segments=true" in stream_file.text
-
-        series = client.request(
-            "PROPFIND",
-            "/dav/%E7%94%B5%E8%A7%86%E5%89%A7/",
-            headers={**_auth(), "Depth": "1"},
-        )
-        assert series.status_code == 207
-        assert series.text.count("<D:response>") == 1
-
+        assert "proxy_segments" not in stream_file.text
 
 def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
-    movie = CatalogMovie(
+    movie = CatalogEntry(
         xlys_id=27078,
         title="阳光女子合唱团",
         year=2025,
@@ -68,7 +60,7 @@ def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
     )
     application = _app()
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
-        get_app_services(application).movie_repository.import_discovered((movie,))
+        get_app_services(application).media_repository.import_discovered_movies((movie,))
         listing = client.request(
             "PROPFIND",
             "/dav/%E7%94%B5%E5%BD%B1/",
@@ -85,3 +77,66 @@ def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
         assert stream_file.status_code == 200
         assert stream_file.text.startswith("http://192.168.1.20:8787/hls.m3u8?")
         assert "27078-0.htm" in stream_file.text
+
+
+def test_webdav_series_catalog_lists_season_and_episode_strm() -> None:
+    detail = parse_xlys_detail(
+        """
+        <div class="movie-header">
+          <div class="movie-poster"><img src="https://img.example/show.jpg"></div>
+          <h1 class="movie-title">柯蒂斯总统 第一季 (2026)</h1>
+          <div class="info-item"><span class="info-label">集数：</span><span class="info-value">10</span></div>
+        </div>
+        <a class="play-item" href="/play/27085-0.htm">第1集</a>
+        <a class="play-item" href="/play/27085-1.htm">第2集</a>
+        """,
+        source_url="https://www.xlys02.com/meiju/27085.htm",
+        source_updated_on="2026-08-28",
+    )
+    entry = CatalogEntry(
+        xlys_id=27085,
+        title=detail.title,
+        year=detail.year,
+        cover_url=detail.cover_url,
+        source_updated_on="2026-08-28",
+        dav_filename="柯蒂斯总统 第一季 (2026).strm",
+        source_url=detail.source_url,
+        douban_rating=8.1,
+    )
+    application = _app()
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        get_app_services(application).media_repository.import_discovered_series(
+            (entry,),
+            (detail,),
+        )
+        series_name = quote("柯蒂斯总统 第一季 (2026)", safe="")
+        root = client.request(
+            "PROPFIND",
+            "/dav/%E7%94%B5%E8%A7%86%E5%89%A7/",
+            headers={**_auth(), "Depth": "1"},
+        )
+        assert root.status_code == 207
+        assert series_name in root.text
+
+        show = client.request(
+            "PROPFIND",
+            f"/dav/%E7%94%B5%E8%A7%86%E5%89%A7/{series_name}/",
+            headers={**_auth(), "Depth": "1"},
+        )
+        assert "Season%2001/" in show.text
+
+        season = client.request(
+            "PROPFIND",
+            f"/dav/%E7%94%B5%E8%A7%86%E5%89%A7/{series_name}/Season%2001/",
+            headers={**_auth(), "Depth": "1"},
+        )
+        assert "S01E01.strm" in season.text
+        assert "S01E02.strm" in season.text
+
+        episode_name = quote("柯蒂斯总统 第一季 S01E01.strm", safe="")
+        episode = client.get(
+            f"/dav/%E7%94%B5%E8%A7%86%E5%89%A7/{series_name}/Season%2001/{episode_name}",
+            headers=_auth(),
+        )
+        assert episode.status_code == 200
+        assert "27085-0.htm" in episode.text

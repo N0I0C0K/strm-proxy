@@ -10,7 +10,6 @@ from starlette.background import BackgroundTask
 from .dependencies import HttpClientDep, ResolverDep, SettingsDep
 from .hls import prepare_mpeg_ts_stream
 
-
 router = APIRouter()
 
 
@@ -37,12 +36,12 @@ async def resolve(resolver: ResolverDep, page_url: str = Query(...)) -> dict:
 async def hls_manifest(
     request: Request,
     resolver: ResolverDep,
+    settings: SettingsDep,
     page_url: str = Query(...),
     line: int = Query(0, ge=0),
-    proxy_segments: bool = Query(True),
 ) -> Response:
     segment_builder = None
-    if proxy_segments:
+    if settings.proxy_segments:
         segment_endpoint = request.url_for("proxy_segment")
 
         def segment_builder(segment_url: str) -> str:
@@ -70,11 +69,8 @@ async def strm(
     request: Request,
     page_url: str = Query(...),
     line: int = Query(0, ge=0),
-    proxy_segments: bool = Query(True),
 ) -> PlainTextResponse:
-    return PlainTextResponse(
-        build_manifest_url(request, page_url, line, proxy_segments) + "\n"
-    )
+    return PlainTextResponse(build_manifest_url(request, page_url, line) + "\n")
 
 
 @router.api_route("/segment", methods=["GET", "HEAD"], name="proxy_segment")
@@ -139,12 +135,10 @@ def build_manifest_url(
     request: Request,
     page_url: str,
     line: int = 0,
-    proxy_segments: bool = True,
 ) -> str:
     return str(
         request.url_for("hls_manifest").include_query_params(
             page_url=page_url,
             line=line,
-            proxy_segments=str(proxy_segments).lower(),
         )
     )
