@@ -46,8 +46,9 @@ def test_webdav_root_lists_media_categories_and_keeps_legacy_strm_direct() -> No
 
         stream_file = client.get("/dav/痴迷.strm", headers=_auth())
         assert stream_file.status_code == 200
-        assert stream_file.text.startswith("http://192.168.1.20:8787/hls.m3u8?")
+        assert stream_file.text.startswith("http://192.168.1.20:8787/play?")
         assert "proxy_segments" not in stream_file.text
+        assert "source=" not in stream_file.text
 
 def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
     movie = CatalogEntry(
@@ -75,7 +76,8 @@ def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
             headers=_auth(),
         )
         assert stream_file.status_code == 200
-        assert stream_file.text.startswith("http://192.168.1.20:8787/hls.m3u8?")
+        assert stream_file.text.startswith("http://192.168.1.20:8787/play?")
+        assert "source=" not in stream_file.text
         assert "27078-0.htm" in stream_file.text
 
 

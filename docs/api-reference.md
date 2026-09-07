@@ -12,7 +12,7 @@ http://127.0.0.1:8787
 
 | 接口组 | 路径 | 鉴权 | 主要用途 |
 | --- | --- | --- | --- |
-| 播放 API | `/health`、`/resolve`、`/hls.m3u8`、`/strm`、`/segment` | 无 | 健康检查、线路解析和播放 |
+| 播放 API | `/health`、`/resolve`、`/play`、`/hls.m3u8`、`/strm`、`/segment` | 无 | 健康检查、线路解析和播放 |
 | 管理 API | `/api/admin/*` | HTTP Basic | 查询、同步、导入和修改媒体策略 |
 | WebDAV | `/dav/` | HTTP Basic，`OPTIONS` 除外 | 向 STRM 播放器暴露虚拟媒体库 |
 | 管理界面 | `/admin/` | 页面静态资源无鉴权；API 有 Basic Auth | 浏览器管理媒体库 |
@@ -24,6 +24,16 @@ http://127.0.0.1:8787
 | `STRM_PROXY_DAV_USER` | `demo` |
 | `STRM_PROXY_DAV_PASSWORD` | `demo` |
 | `STRM_PROXY_PROXY_SEGMENTS` | `true` |
+| `STRM_PROXY_PLAY_SELECTION_CACHE` | `true` |
+| `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` | `600` 秒 |
+| `STRM_PROXY_SEGMENT_CACHE_MAX_MB` | `128` MiB；`0` 表示关闭 |
+| `STRM_PROXY_LOG_LEVEL` | `INFO` |
+| `STRM_PROXY_XLYS_USERNAME` | 未设置 |
+| `STRM_PROXY_XLYS_PASSWORD` | 未设置 |
+| `STRM_PROXY_REQUEST_TIMEOUT` | `20` 秒 |
+| `STRM_PROXY_CONNECT_TIMEOUT` | `10` 秒 |
+
+两个 xlys 登录变量必须同时设置；其值对应站点实际使用的 `username`、`password` Cookie 值，而不是 WebDAV 账号。Cookie 按 xlys 域限定，不会发送给媒体 CDN。
 
 公网部署必须修改默认密码并使用 HTTPS 或可信私有网络。当前播放 API 没有鉴权，不应直接无保护地暴露到公网。
 
@@ -71,6 +81,11 @@ GET /resolve?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
   "page_url": "https://www.xlys02.com/play/27062-0.htm",
   "pid": 204486,
   "title": "痴迷",
+  "sources": {
+    "hls": true,
+    "tos": true,
+    "member": true
+  },
   "lines": [
     {
       "index": 0,
@@ -81,9 +96,39 @@ GET /resolve?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
 }
 ```
 
-`lines[].index` 是后续 `/hls.m3u8` 和 `/strm` 的 `line` 参数值。线路地址由上游动态返回，不适合长期保存。
+`sources` 只表示 `/lines` 是否公布对应能力，不表示媒体 CDN 已经验证可用；`/play` 会在返回直连地址前做小型 Range 探测。HLS 线路数量就是 `lines` 数组长度：服务会拆分三个上游字段中的逗号分隔 URL，过滤非 M3U8 项并按 URL 去重，然后从 `0` 连续编号。`lines[].index` 是 HLS 专用的 `line` 参数值。线路地址和数量都由上游动态返回，不适合长期保存。
 
-### 2.3 `GET /hls.m3u8`
+### 2.3 `GET` 或 `HEAD /play`
+
+稳定的协议无关播放入口。默认 `source=auto`：先查询持久化播放决策；命中后只复用该 source 或 HLS line，不再探索其他方向。未命中或缓存方向失效时，固定按 `TOS → member → 探测 HLS` 处理来源。HLS 探测会解包 manifest，并以普通流式 GET 读取首个媒体资源的少量前缀；直连对象使用 `Range: bytes=0-63` 验证视频 Content-Type 或 MP4 `ftyp` 文件头。
+
+同一 `page_url` 在一个服务进程内只会同时运行一个探索任务。并发请求共享结果；等待中的客户端超时或断开只会取消该客户端的等待，不会取消探索任务，成功结果仍会写入 SQLite 供客户端后续重试。
+
+`/lines.data.ptoken` 只表示页面公布了受验证码保护的会员线路，不是可直接提交的验证码。站点验证码是一道整数加、减、乘算术题，要求在同一会话中提交计算结果。当前版本尚未启用自动 OCR，也不提供人工预验证入口；`source=member` 会报告识别器未配置，`source=auto` 会继续回退 HLS。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `page_url` | string | 是 | — | xlys 播放页 URL |
+| `source` | enum | 否 | `auto` | `auto`、`hls`、`tos` 或 `member` |
+| `line` | integer | 否 | `0` | `auto` 时作为首选 HLS 线路；`hls` 时严格指定线路索引 |
+
+成功响应为不缓存的 `302`：
+
+```http
+HTTP/1.1 302 Found
+Cache-Control: no-store
+Location: https://.../video-object
+```
+
+TOS 成功时，TV 直接访问媒体 CDN，视频数据不经过本服务。进入 HLS 探测后只读取各候选的 manifest 和首个媒体资源开头，不下载完整分片。登录 Cookie 只用于 xlys 播放页和 `/lines`，不会发送给媒体 CDN。`ptoken` 不会被当作验证码提交。
+
+播放决策缓存只参与 `source=auto`，保存在 SQLite 的通用 `cache_entries` 表中，服务重启后仍然有效。HLS 缓存项同时记录 line、候选类型和候选 URL；候选变化、line 消失或 manifest 获取失败时自动删除。设置 `STRM_PROXY_PLAY_SELECTION_CACHE=false` 可以关闭持久化的成功/失败缓存，使每个请求都重新探索；视频级并发合并仍然生效。
+
+如果页面公布的所有来源都失败，响应为 `503 Service Unavailable`，并包含 `Retry-After: 30` 与 `X-STRM-Proxy-Error: no-playable-source`。JSON 的 `detail.errors` 会列出 TOS、member 和 HLS 的失败原因，便于非播放器客户端诊断。相同页面的失败结果缓存 30 秒，期间重试直接返回相同的 `503`；本服务不生成错误视频。
+
+### 2.4 `GET /hls.m3u8`
 
 稳定的 HLS 播放入口。服务会解析播放页、请求动态线路、还原包装后的 M3U8，并根据全局环境变量决定是否代理 TS 分片。
 
@@ -99,9 +144,11 @@ GET /resolve?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
 | `STRM_PROXY_PROXY_SEGMENTS` | 返回清单中的 TS 地址 | 数据链路 | 兼容性与流量 |
 | --- | --- | --- | --- |
 | `true` | `http(s)://本服务/segment?...` | TV → 本服务 → 上游 CDN | 兼容性高，全部视频流量经过本服务 |
-| `false` | `https://vod.xl01.me/...ts` | TV → 上游 CDN | 本服务流量很小，但播放器必须能识别带 PNG 前缀的 TS |
+| `false` | `https://vod.xl01.me/...ts` | TV → 上游 CDN | 本服务流量很小；自动选线优先原生分片，全部线路均有包装时仍取决于播放器兼容性 |
 
-该配置在服务启动时读取，修改后必须重启。旧客户端 URL 中即使仍有 `proxy_segments=true|false`，也会被当作未知查询参数忽略。`false` 只让 TS 分片直连；M3U8 仍由本服务获取、解包并返回，因为上游原始 M3U8 不是标准明文清单。
+`source=auto` 的 HLS 选线由分片传输模式自动决定。`STRM_PROXY_PROXY_SEGMENTS=true` 时，包装线路和原生线路都能由服务端处理，选择首个探测成功的健康线路；设为 `false` 时，服务优先选择 MPEG-TS 从第 0 字节开始或标准 fMP4 的原生线路，全部健康线路均为图片包装时才回退到包装线路。显式 `source=hls&line=N` 始终使用指定线路，不执行自动换线。
+
+这些配置在服务启动时读取，修改后必须重启。旧客户端 URL 中即使仍有 `proxy_segments=true|false`，也会被当作未知查询参数忽略。`STRM_PROXY_PROXY_SEGMENTS=false` 只让 TS 分片直连；M3U8 仍由本服务获取、解包并返回，因为上游原始 M3U8 不是标准明文清单。
 
 响应：
 
@@ -119,16 +166,17 @@ Cache-Control: no-store
 http://127.0.0.1:8787/segment?url=...
 ```
 
-### 2.4 `GET /strm`
+### 2.5 `GET /strm`
 
-生成适合写入 `.strm` 文件的一行播放 URL。本接口不解析上游播放页，只负责构造 `/hls.m3u8` 地址。
+生成适合写入 `.strm` 文件的一行播放 URL。本接口不解析上游播放页，只负责构造稳定的 `/play` 地址。
 
 查询参数：
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `page_url` | string | 是 | — | xlys 播放页 URL |
-| `line` | integer | 否 | `0` | HLS 线路索引，必须大于等于 0 |
+| `source` | enum | 否 | `auto` | `auto`、`hls`、`tos` 或 `member`；`auto` 不写入返回 URL |
+| `line` | integer | 否 | `0` | HLS 线路索引；默认值 `0` 不写入返回 URL |
 
 响应：
 
@@ -137,14 +185,14 @@ Content-Type: text/plain; charset=utf-8
 ```
 
 ```text
-http://127.0.0.1:8787/hls.m3u8?page_url=...&line=0
+http://127.0.0.1:8787/play?page_url=...
 ```
 
 返回 URL 的协议和主机来自当前 HTTP 请求。经过反向代理时，必须正确传递外部 Host 和协议，否则 STRM 中可能出现内网地址或错误的 `http` 协议。
 
-### 2.5 `GET /segment`
+### 2.6 `GET /segment`
 
-获取一个上游 TS 分片，寻找 MPEG-TS 同步位置，丢弃前面的包装字节并流式返回。
+获取一个上游 TS 分片，寻找 MPEG-TS 同步位置，只流式返回完整且同步的 188 字节 MPEG-TS 包。
 
 查询参数：
 
@@ -152,6 +200,8 @@ http://127.0.0.1:8787/hls.m3u8?page_url=...&line=0
 | --- | --- | --- | --- | --- |
 | `url` | string | 是 | — | 上游 TS URL；必须是 HTTPS，主机必须等于配置的分片主机 |
 | `referer` | string | 否 | `null` | 请求上游分片时使用的 `Referer`，通常是 xlys 播放页 URL |
+| `playlist` | string | 否 | `null` | `/hls.m3u8` 生成的内部播放列表标识，用于定位后续分片 |
+| `index` | integer | 否 | `null` | 当前分片在播放列表中的索引，用于启动前向预读 |
 
 默认只允许：
 
@@ -165,13 +215,15 @@ https://vod.xl01.me/...
 Content-Type: video/mp2t
 ```
 
-正文从第一个可信 MPEG-TS 同步包开始。服务最多在上游响应的前 64 KiB 中寻找三个间隔 188 字节的 `0x47` 同步字节；未找到时返回 `502`。
+正文从第一个可信 MPEG-TS 同步包开始。服务最多在上游响应的前 64 KiB 中寻找三个间隔 188 字节的 `0x47` 同步字节；未找到时返回 `502`。传输途中会在出现包装尾部或填充数据时重新同步，并丢弃末尾不足 188 字节的残片。
 
-该接口不缓存分片，也不先下载完整文件，而是找到 TS 起点后继续流式转发。
+前台缓存未命中时，该接口仍然在找到 TS 起点后立即流式返回，不会为了缓存而等待整段下载完成；完整分片传输结束后，已经去除包装的数据写入全局内存 LRU 缓存。相同分片正在下载时，后续请求会等待并复用同一个结果。
 
-### 2.6 `HEAD /segment`
+当 URL 包含有效的 `playlist` 和 `index` 时，服务根据 M3U8 中的 `EXTINF` 从下一段开始向后预读，累计约 `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` 秒后停止。后台下载全局最多并发 2 路，并受 `STRM_PROXY_SEGMENT_CACHE_MAX_MB` 容量限制。预读失败不会写入错误或残缺内容。上述行为仅在 `STRM_PROXY_PROXY_SEGMENTS=true` 且容量大于零时启用。
 
-参数与 `GET /segment` 相同。服务向上游发送 `HEAD`，返回上游状态码和允许透传的缓存头，但不读取或验证 TS 内容。
+### 2.7 `HEAD /segment`
+
+参数与 `GET /segment` 相同。已有内存缓存时直接返回缓存长度；未命中时向上游发送 `HEAD`。HEAD 本身不启动预读，也不下载或验证 TS 内容。
 
 ## 3. 管理 API
 
@@ -412,7 +464,7 @@ PROPFIND /dav/电影/
 
 ### 4.5 `GET` 或 `HEAD` `.strm`
 
-`GET` 返回一行本服务 `/hls.m3u8` 地址；`HEAD` 返回相同元数据但没有正文。
+`GET` 返回一行本服务 `/play` 地址；`HEAD` 返回相同元数据但没有正文。
 
 响应头包括：
 
@@ -423,13 +475,13 @@ ETag: "..."
 Cache-Control: no-store
 ```
 
-WebDAV 生成的 STRM 当前固定使用默认线路参数：
+WebDAV 生成的 STRM 省略 `source` 和默认的 `line=0`：
 
 ```text
-line=0
+/play?page_url=...
 ```
 
-分片代理模式不写入 STRM，而是由服务端全局环境变量 `STRM_PROXY_PROXY_SEGMENTS` 决定。
+因此服务端默认执行 `source=auto`，未来调整自动选择策略不需要重新生成 STRM。分片代理模式也不写入 STRM，而是由服务端全局环境变量 `STRM_PROXY_PROXY_SEGMENTS` 决定。
 
 原有兼容文件 `/dav/<STRM_PROXY_DAV_FILENAME>` 仍可直接请求，但不会出现在根目录的 PROPFIND 结果中。
 
@@ -438,12 +490,14 @@ line=0
 | 状态码 | 来源 | 典型原因 |
 | --- | --- | --- |
 | `200` | 普通 GET、PATCH、POST、OPTIONS | 请求成功 |
+| `302` | `/play` | 已选择并重定向到直连 MP4 或本地 HLS |
 | `207` | WebDAV PROPFIND | 返回 Multi-Status XML |
 | `400` | `/segment` | 分片 URL 不是 HTTPS 或主机不在允许列表 |
 | `401` | 管理 API、WebDAV | Basic Auth 缺失或账号密码错误 |
 | `404` | 管理策略、WebDAV | 媒体 ID 或虚拟资源不存在 |
 | `422` | FastAPI 参数校验 | 缺少必填参数、负数 `line`、请求体格式错误或数组长度越界 |
 | `502` | 解析器或上游请求 | 上游失败、线路不存在、包装格式变化、找不到 TS 同步包 |
+| `503` | `/play?source=auto` | 所有公布的播放来源均探测失败，可按 `Retry-After` 重试 |
 
 错误响应通常为：
 
@@ -459,8 +513,49 @@ line=0
 | --- | --- | --- |
 | 播放页解析结果 | 300 秒内存缓存 | 包括 PID、标题和候选线路 |
 | 解包后的 M3U8 | 300 秒内存缓存 | 缓存键为 `page_url + line` |
+| 自动播放决策 | SQLite 持久缓存 | 最近验证成功的 direct source 或 HLS line；可关闭 |
+| 自动播放失败 | SQLite 30 秒缓存 | 保存各来源错误，抑制播放器短时间内的重复探索；可关闭 |
 | 资源发现结果 | 1800 秒内存缓存 | 电影和电视剧分别缓存 |
 | SQLite 媒体目录 | 持久化 | 服务重启后仍存在 |
-| TS 分片 | 不缓存 | 每次由 `/segment` 重新访问上游 |
+| TS 分片 | 最多 128 MiB 内存 LRU | 代理模式下缓存清洗后的完整 TS，并从当前分片向后预读约 600 秒 |
 
 即使原始 M3U8 命中缓存，服务仍会根据本次请求的 Host 和协议重新生成 `/segment` 地址，因此不同访问地址不会互相污染缓存。
+
+## 7. 日志
+
+`STRM_PROXY_LOG_LEVEL` 支持 `DEBUG`、`INFO`、`WARNING`、`ERROR` 和 `CRITICAL`。默认 `INFO` 适合长期运行；`DEBUG` 适合临时排查上游线路、包装格式和缓存行为。
+
+日志采用便于搜索的 `event=<name> key=value` 格式。播放链路常用事件：
+
+| 事件 | 级别 | 含义 |
+| --- | --- | --- |
+| `play_request` | INFO | TV 请求稳定播放入口及请求的 source/line |
+| `play_exploration_started` | INFO | 为该播放页创建视频级探索任务 |
+| `play_exploration_joined` | INFO | 并发请求加入已有的视频级探索任务 |
+| `play_selection_cache_hit` | INFO | 命中最近验证成功的 source/line 并直接复用 |
+| `play_selection_cache_set` | INFO | 写入新验证成功的自动播放决策 |
+| `play_selection_cache_invalidated` | INFO | 候选变化或缓存方向失败后清除决策 |
+| `play_failure_cache_hit` | INFO | 在失败冷却期内直接复用失败结果 |
+| `play_failure_cache_set` | INFO | 所有来源失败后写入短期失败结果 |
+| `lines_parsed` | INFO | `/lines` 动态返回的 HLS 数量、TOS 和会员能力 |
+| `direct_source_selected` | INFO | TOS MP4 已验证可用 |
+| `hls_probe_start` | INFO | HLS 候选数量、优先顺序和并行探测策略 |
+| `hls_line_unhealthy` | INFO | 某条 HLS 首个媒体资源不可用，继续下一条 |
+| `hls_line_deferred` | INFO | 健康线路带有包装，暂存为兜底并继续寻找原生线路 |
+| `hls_line_probe_error` | WARNING | manifest、嵌套清单或上游请求异常 |
+| `hls_line_selected` | INFO | 自动换线最终选择的索引、媒体类型及是否为包装兜底 |
+| `play_selected` | INFO | `/play` 最终返回的播放模式和 line/source |
+| `segment_upstream_error` | WARNING | `/segment` 请求上游 TS 返回错误状态 |
+| `segment_prefetch_started` | INFO | 启动一个播放列表的前向预读窗口 |
+| `segment_prefetch_finished` | INFO | 前向预读结束及当前缓存条目数、字节数 |
+| `segment_prefetch_capacity_reached` | INFO | 当前预读窗口已达到全局容量限制 |
+| `segment_prefetch_failed` | WARNING | 后台分片请求或 TS 清洗失败，停止当前窗口 |
+| `segment_cache_hit` | DEBUG | 从内存直接返回清洗后的 TS |
+| `segment_cache_join` | DEBUG | 相同分片请求加入正在进行的下载 |
+| `segment_cache_evicted` | DEBUG | 达到全局上限后按 LRU 淘汰分片 |
+| `segment_sync_found` | DEBUG | TS 伪装前缀长度及已检查字节数 |
+| `segment_non_ts_discarded` | DEBUG | 丢弃的包装尾部、填充或不完整字节数 |
+| `catalog_discovery_complete` | INFO | 电影或电视剧资源发现完成及条目数量 |
+| `webdav_list` | INFO | WebDAV 向客户端列出的媒体数量 |
+
+URL 在写入日志前会移除用户信息、查询参数和 fragment。登录 Cookie、`/lines` 签名、`/god` 表单值和临时媒体 token 均不会主动写入日志。HTTPX 和 HTTPCore 的完整请求 URL 日志固定限制为 `WARNING`；Uvicorn 访问日志保留客户端、方法、路径和状态码，但通过过滤器删除查询串。应用只输出到标准输出，日志文件、轮转与保留周期应交给 Docker、systemd 或部署平台配置。

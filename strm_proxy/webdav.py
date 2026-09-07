@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 from datetime import date, datetime, time, timezone
 from email.utils import format_datetime, formatdate
@@ -15,9 +16,11 @@ from .config import DavSettings
 from .database import Episode, MediaItem
 from .dependencies import DavSettingsDep, MediaLibraryDep
 from .library import MediaLibrary
-from .routes import build_manifest_url
+from .logging_utils import safe_url_for_log
+from .routes import build_play_url
 
 router = APIRouter(include_in_schema=False)
+logger = logging.getLogger(__name__)
 
 DAV_METHODS = ["OPTIONS", "PROPFIND", "GET", "HEAD"]
 DAV_HEADERS = {
@@ -32,6 +35,11 @@ DAV_LAST_MODIFIED = formatdate(usegmt=True)
 @router.api_route("/dav", methods=DAV_METHODS)
 @router.api_route("/dav/", methods=DAV_METHODS)
 async def webdav_root(request: Request, settings: DavSettingsDep) -> Response:
+    logger.debug(
+        "event=webdav_request method=%s path=/dav/ depth=%s",
+        request.method,
+        request.headers.get("depth", "none"),
+    )
     if request.method == "OPTIONS":
         return _options()
     _authenticate(request, settings)
@@ -74,6 +82,11 @@ async def webdav_file(
                 if request.headers.get("depth", "1") != "0"
                 else ()
             )
+            logger.info(
+                "event=webdav_list kind=movie count=%d depth=%s",
+                len(movies),
+                request.headers.get("depth", "1"),
+            )
             return _propfind_catalog(request, settings, movies, library)
         if request.method == "HEAD":
             return Response(headers=DAV_HEADERS, media_type="text/plain")
@@ -89,6 +102,11 @@ async def webdav_file(
                 await library.visible_series()
                 if request.headers.get("depth", "1") != "0"
                 else ()
+            )
+            logger.info(
+                "event=webdav_list kind=series count=%d depth=%s",
+                len(series),
+                request.headers.get("depth", "1"),
             )
             return _propfind_series_root(settings, series)
         if request.method == "HEAD":
@@ -185,6 +203,12 @@ async def _series_resource(
 
 def _strm_response(request: Request, page_url: str) -> Response:
     content = _strm_content_for_page(request, page_url)
+    logger.debug(
+        "event=webdav_strm method=%s page=%s target=%s",
+        request.method,
+        safe_url_for_log(page_url),
+        safe_url_for_log(content.strip()),
+    )
     headers = {
         **DAV_HEADERS,
         "Content-Length": str(len(content.encode("utf-8"))),
@@ -510,7 +534,7 @@ def _strm_content(request: Request, settings: DavSettings) -> str:
 
 
 def _strm_content_for_page(request: Request, page_url: str) -> str:
-    return build_manifest_url(request, page_url) + "\n"
+    return build_play_url(request, page_url) + "\n"
 
 
 def _dav_modified(value: date | str | None) -> str:

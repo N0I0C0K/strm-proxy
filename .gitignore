@@ -1,5 +1,9 @@
 # Python-generated files
 __pycache__/
+.pytest_cache/
+.uv-cache/
+.coverage
+htmlcov/
 *.py[oc]
 build/
 dist/

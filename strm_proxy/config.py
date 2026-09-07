@@ -47,7 +47,11 @@ class DavSettings:
 class AppSettings:
     host: str = "0.0.0.0"
     port: int = 8787
+    log_level: str = "INFO"
     proxy_segments: bool = True
+    play_selection_cache: bool = True
+    segment_prefetch_seconds: float = 600.0
+    segment_cache_max_mb: int = 128
     user_agent: str = DEFAULT_USER_AGENT
     request_timeout_seconds: float = 20.0
     connect_timeout_seconds: float = 10.0
@@ -60,6 +64,8 @@ class AppSettings:
     database_path: str = "data/strm-proxy.db"
     allowed_page_hosts: tuple[str, ...] = ("www.xlys02.com", "xlys02.com")
     segment_host: str = "vod.xl01.me"
+    xlys_username: str | None = None
+    xlys_password: str | None = None
     dav: DavSettings = field(default_factory=DavSettings)
 
     @classmethod
@@ -67,9 +73,26 @@ class AppSettings:
         settings = cls(
             host=os.getenv("STRM_PROXY_HOST", "0.0.0.0"),
             port=int(os.getenv("STRM_PROXY_PORT", "8787")),
+            log_level=os.getenv("STRM_PROXY_LOG_LEVEL", "INFO").strip().upper(),
             proxy_segments=_environment_bool(
                 "STRM_PROXY_PROXY_SEGMENTS",
                 default=True,
+            ),
+            play_selection_cache=_environment_bool(
+                "STRM_PROXY_PLAY_SELECTION_CACHE",
+                default=True,
+            ),
+            segment_prefetch_seconds=float(
+                os.getenv("STRM_PROXY_SEGMENT_PREFETCH_SECONDS", "600")
+            ),
+            segment_cache_max_mb=int(
+                os.getenv("STRM_PROXY_SEGMENT_CACHE_MAX_MB", "128")
+            ),
+            request_timeout_seconds=float(
+                os.getenv("STRM_PROXY_REQUEST_TIMEOUT", "20")
+            ),
+            connect_timeout_seconds=float(
+                os.getenv("STRM_PROXY_CONNECT_TIMEOUT", "10")
             ),
             cache_ttl_seconds=float(os.getenv("STRM_PROXY_CACHE_TTL", "300")),
             discovery_recent_limit=int(
@@ -90,6 +113,8 @@ class AppSettings:
             database_path=os.getenv(
                 "STRM_PROXY_DATABASE_PATH", "data/strm-proxy.db"
             ),
+            xlys_username=_optional_environment("STRM_PROXY_XLYS_USERNAME"),
+            xlys_password=_optional_environment("STRM_PROXY_XLYS_PASSWORD"),
             dav=DavSettings(
                 username=os.getenv("STRM_PROXY_DAV_USER", "demo"),
                 password=os.getenv("STRM_PROXY_DAV_PASSWORD", "demo"),
@@ -109,8 +134,31 @@ class AppSettings:
     def validate(self) -> None:
         if not 1 <= self.port <= 65535:
             raise RuntimeError("STRM_PROXY_PORT must be between 1 and 65535")
+        if self.log_level not in {
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+        }:
+            raise RuntimeError(
+                "STRM_PROXY_LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, "
+                "or CRITICAL"
+            )
         if self.cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CACHE_TTL must be positive")
+        if self.request_timeout_seconds <= 0:
+            raise RuntimeError("STRM_PROXY_REQUEST_TIMEOUT must be positive")
+        if self.connect_timeout_seconds <= 0:
+            raise RuntimeError("STRM_PROXY_CONNECT_TIMEOUT must be positive")
+        if self.segment_prefetch_seconds < 0:
+            raise RuntimeError(
+                "STRM_PROXY_SEGMENT_PREFETCH_SECONDS must not be negative"
+            )
+        if self.segment_cache_max_mb < 0:
+            raise RuntimeError(
+                "STRM_PROXY_SEGMENT_CACHE_MAX_MB must not be negative"
+            )
         if not 1 <= self.discovery_recent_limit <= 500:
             raise RuntimeError(
                 "STRM_PROXY_DISCOVERY_RECENT_LIMIT must be between 1 and 500"
@@ -131,7 +179,16 @@ class AppSettings:
             raise RuntimeError("STRM_PROXY_CATALOG_CACHE_TTL must be positive")
         if not self.database_path.strip():
             raise RuntimeError("STRM_PROXY_DATABASE_PATH must not be empty")
+        if (self.xlys_username is None) != (self.xlys_password is None):
+            raise RuntimeError(
+                "STRM_PROXY_XLYS_USERNAME and STRM_PROXY_XLYS_PASSWORD "
+                "must be configured together"
+            )
         self.dav.validate()
+
+    @property
+    def has_xlys_login(self) -> bool:
+        return self.xlys_username is not None and self.xlys_password is not None
 
 
 def _environment_bool(name: str, *, default: bool) -> bool:
@@ -146,3 +203,10 @@ def _environment_bool(name: str, *, default: bool) -> bool:
     raise RuntimeError(
         f"{name} must be one of true/false, 1/0, yes/no, or on/off"
     )
+
+
+def _optional_environment(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()

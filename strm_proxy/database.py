@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     create_engine,
     delete as sql_delete,
@@ -108,6 +109,60 @@ class Episode(Base):
     source_index: Mapped[int] = mapped_column(Integer, nullable=False)
     label: Mapped[str] = mapped_column(String(64), nullable=False)
     play_path: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
+class CacheEntry(Base):
+    __tablename__ = "cache_entries"
+
+    key: Mapped[str] = mapped_column(String(2048), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CacheRepository:
+    """Minimal persistent key/value cache backed by the application database."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._sessions = sessionmaker(engine, expire_on_commit=False)
+
+    def get(self, key: str) -> str | None:
+        with self._sessions.begin() as session:
+            entry = session.get(CacheEntry, key)
+            if entry is None:
+                return None
+            if entry.expires_at is not None:
+                expires_at = entry.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= datetime.now(timezone.utc):
+                    session.delete(entry)
+                    return None
+            return entry.value
+
+    def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        with self._sessions.begin() as session:
+            entry = session.get(CacheEntry, key)
+            if entry is None:
+                session.add(
+                    CacheEntry(
+                        key=key,
+                        value=value,
+                        expires_at=expires_at,
+                    )
+                )
+            else:
+                entry.value = value
+                entry.expires_at = expires_at
+
+    def delete(self, key: str) -> None:
+        with self._sessions.begin() as session:
+            session.execute(sql_delete(CacheEntry).where(CacheEntry.key == key))
 
 
 class MediaRepository:

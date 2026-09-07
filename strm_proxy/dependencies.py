@@ -12,6 +12,8 @@ from .catalog import XlysCatalog
 from .config import AppSettings, DavSettings
 from .database import MediaRepository
 from .library import MediaLibrary
+from .playback_selection import PlaybackCoordinator
+from .segment_cache import SegmentCache
 from .xlys import XlysResolver
 
 
@@ -22,6 +24,8 @@ class AppServices:
     settings: AppSettings
     http: httpx.AsyncClient
     resolver: XlysResolver
+    playback: PlaybackCoordinator
+    segment_cache: SegmentCache
     catalog: XlysCatalog
     media_repository: MediaRepository
     media_library: MediaLibrary
@@ -72,6 +76,23 @@ def get_resolver(services: ServicesDep) -> XlysResolver:
 
 
 ResolverDep = Annotated[XlysResolver, Depends(get_resolver)]
+
+
+def get_playback(services: ServicesDep) -> PlaybackCoordinator:
+    return services.playback
+
+
+PlaybackCoordinatorDep = Annotated[
+    PlaybackCoordinator,
+    Depends(get_playback),
+]
+
+
+def get_segment_cache(services: ServicesDep) -> SegmentCache:
+    return services.segment_cache
+
+
+SegmentCacheDep = Annotated[SegmentCache, Depends(get_segment_cache)]
 
 
 def get_catalog(services: ServicesDep) -> XlysCatalog:

@@ -19,3 +19,5 @@ class ResolvedPage:
     pid: int
     title: str | None
     candidates: tuple[StreamCandidate, ...]
+    tos_available: bool = False
+    member_token: str | None = None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, replace
 from datetime import date
@@ -10,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .cache import TTLCache
+from .logging_utils import describe_http_error
 from .models import ResolverError
 
 
@@ -21,6 +23,12 @@ _COMPLETE_EPISODES_PATTERN = re.compile(
     r"(?:全\s*(\d+)\s*集|(\d+)\s*集全)"
 )
 _INVALID_FILENAME_PATTERN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+logger = logging.getLogger(__name__)
+
+
+def _media_type_label(media_type: int) -> str:
+    return "series" if media_type == 1 else "movie"
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,18 +174,52 @@ class XlysCatalog:
     async def _discover(self, *, media_type: int) -> tuple[CatalogEntry, ...]:
         key = f"discovery:{media_type}"
         if cached := self._cache.get(key):
+            logger.debug(
+                "event=catalog_cache_hit kind=%s count=%d",
+                _media_type_label(media_type),
+                len(cached),
+            )
             return cached
         async with self._refresh_locks[media_type]:
             if cached := self._cache.get(key):
+                logger.debug(
+                    "event=catalog_cache_hit kind=%s count=%d",
+                    _media_type_label(media_type),
+                    len(cached),
+                )
                 return cached
+            logger.info(
+                "event=catalog_discovery_start kind=%s recent_limit=%d "
+                "year_span=%d",
+                _media_type_label(media_type),
+                self.recent_limit,
+                self.year_span,
+            )
             try:
                 entries = await self._fetch_discovery(media_type)
-            except (httpx.HTTPError, ResolverError):
+            except (httpx.HTTPError, ResolverError) as exc:
                 if previous := self._last_good.get(media_type):
+                    detail = (
+                        describe_http_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else str(exc)
+                    )
+                    logger.warning(
+                        "event=catalog_discovery_fallback kind=%s count=%d "
+                        "detail=%s",
+                        _media_type_label(media_type),
+                        len(previous),
+                        detail,
+                    )
                     return previous
                 raise
             self._cache.set(key, entries)
             self._last_good[media_type] = entries
+            logger.info(
+                "event=catalog_discovery_complete kind=%s count=%d",
+                _media_type_label(media_type),
+                len(entries),
+            )
             return entries
 
     async def _fetch_discovery(

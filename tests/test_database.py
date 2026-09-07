@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from strm_proxy.catalog import CatalogEntry
 from strm_proxy.database import (
+    CacheRepository,
     MediaType,
     MoviePolicy,
     create_media_repository,
@@ -62,6 +63,9 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
     episode_columns = {
         column["name"] for column in inspector.get_columns("episodes")
     }
+    cache_columns = {
+        column["name"] for column in inspector.get_columns("cache_entries")
+    }
 
     assert media_columns == {
         "xlys_id",
@@ -86,6 +90,25 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
         "label",
         "play_path",
     }
+    assert cache_columns == {"key", "value", "expires_at"}
+    repository.close()
+
+
+def test_generic_cache_supports_values_expiration_and_deletion() -> None:
+    repository = create_media_repository(":memory:")
+    cache = CacheRepository(repository.engine)
+
+    cache.set("active", '{"value":1}')
+    cache.set(
+        "expired",
+        '{"value":2}',
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+
+    assert cache.get("active") == '{"value":1}'
+    assert cache.get("expired") is None
+    cache.delete("active")
+    assert cache.get("active") is None
     repository.close()
 
 
@@ -234,6 +257,21 @@ def test_sqlite_database_persists_media_between_restarts() -> None:
         assert [
             movie.xlys_id for movie in reopened.list_visible_movies()
         ] == [27078]
+        reopened.close()
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(database_path) + suffix).unlink(missing_ok=True)
+
+
+def test_sqlite_database_persists_generic_cache_between_restarts() -> None:
+    database_path = Path("data") / f"cache-{uuid4().hex}.db"
+    try:
+        repository = create_media_repository(str(database_path))
+        CacheRepository(repository.engine).set("persistent", '{"line":2}')
+        repository.close()
+
+        reopened = create_media_repository(str(database_path))
+        assert CacheRepository(reopened.engine).get("persistent") == '{"line":2}'
         reopened.close()
     finally:
         for suffix in ("", "-wal", "-shm"):

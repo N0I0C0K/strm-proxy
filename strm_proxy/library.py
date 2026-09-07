@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from urllib.parse import urlparse
 
 import httpx
@@ -8,7 +9,11 @@ import httpx
 from .catalog import CatalogEntry, XlysCatalog, safe_media_name
 from .database import Episode, MediaItem, MediaRepository
 from .detail import XlysDetail, fetch_xlys_detail
+from .logging_utils import describe_http_error, safe_url_for_log
 from .models import ResolverError
+
+
+logger = logging.getLogger(__name__)
 
 
 class MediaLibrary:
@@ -62,12 +67,19 @@ class MediaLibrary:
         return self.repository.list_episodes(series.xlys_id)
 
     async def sync_from_source(self) -> tuple[MediaItem, ...]:
+        logger.info("event=library_sync_start kind=all")
         movies, series_entries = await asyncio.gather(
             self.catalog.discover_movies(),
             self.catalog.discover_series(),
         )
         await self.import_discovery(movies, series_entries)
-        return self.repository.list_visible_movies()
+        visible_movies = self.repository.list_visible_movies()
+        logger.info(
+            "event=library_sync_complete movies=%d series=%d",
+            len(visible_movies),
+            len(self.repository.list_visible_series()),
+        )
+        return visible_movies
 
     async def import_discovery(
         self,
@@ -82,6 +94,13 @@ class MediaLibrary:
                 if entry.available_episode_count is None
             )
         )
+        logger.info(
+            "event=library_import_discovery movies=%d series=%d "
+            "series_details=%d",
+            len(movies),
+            len(series_entries),
+            len(series_details),
+        )
         self.repository.import_discovered_movies(movies, replace_auto=True)
         self.repository.import_discovered_series(
             series_entries,
@@ -90,11 +109,19 @@ class MediaLibrary:
         )
 
     async def sync_movies_from_source(self) -> tuple[MediaItem, ...]:
+        logger.info("event=library_sync_start kind=movie")
         discovered = await self.catalog.discover_movies()
         self.repository.import_discovered_movies(discovered, replace_auto=True)
-        return self.repository.list_visible_movies()
+        visible = self.repository.list_visible_movies()
+        logger.info(
+            "event=library_sync_complete kind=movie discovered=%d visible=%d",
+            len(discovered),
+            len(visible),
+        )
+        return visible
 
     async def sync_series_from_source(self) -> tuple[MediaItem, ...]:
+        logger.info("event=library_sync_start kind=series")
         entries = await self.catalog.discover_series()
         details = await self._fetch_series_details(
             tuple(
@@ -108,7 +135,13 @@ class MediaLibrary:
             details,
             replace_auto=True,
         )
-        return self.repository.list_visible_series()
+        visible = self.repository.list_visible_series()
+        logger.info(
+            "event=library_sync_complete kind=series discovered=%d visible=%d",
+            len(entries),
+            len(visible),
+        )
+        return visible
 
     def movie_play_url(self, movie: MediaItem) -> str:
         return f"{self.catalog.origin}/play/{movie.xlys_id}-0.htm"
@@ -144,6 +177,7 @@ class MediaLibrary:
             return
         async with self._movie_bootstrap_lock:
             if not self.repository.has_movies():
+                logger.info("event=library_bootstrap kind=movie")
                 await self.sync_movies_from_source()
 
     async def _bootstrap_series_if_empty(self) -> None:
@@ -151,6 +185,7 @@ class MediaLibrary:
             return
         async with self._series_bootstrap_lock:
             if not self.repository.has_series():
+                logger.info("event=library_bootstrap kind=series")
                 await self.sync_series_from_source()
 
     async def _fetch_series_details(
@@ -183,7 +218,18 @@ class MediaLibrary:
                         entry.source_url,
                         allowed_hosts=allowed_hosts,
                     )
-                except (httpx.HTTPError, ResolverError):
+                except (httpx.HTTPError, ResolverError) as exc:
+                    detail = (
+                        describe_http_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else str(exc)
+                    )
+                    logger.warning(
+                        "event=series_detail_failed xlys_id=%d source=%s detail=%s",
+                        entry.xlys_id,
+                        safe_url_for_log(entry.source_url),
+                        detail,
+                    )
                     return None
 
         details = tuple(
