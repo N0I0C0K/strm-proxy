@@ -42,8 +42,18 @@ class SegmentClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentLocation:
+    playlist_id: str
+    index: int
+    url: str
+    referer: str
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
 class _Playlist:
     referer: str
+    revision: str
     segments: tuple[SegmentSpec, ...]
 
 
@@ -68,6 +78,7 @@ class SegmentCache:
         self._total_bytes = 0
         self._inflight: dict[str, asyncio.Future[SegmentPayload | None]] = {}
         self._playlists: OrderedDict[str, _Playlist] = OrderedDict()
+        self._active_playlists: dict[str, str] = {}
         self._desired_windows: dict[str, tuple[int, int]] = {}
         self._prefetch_tasks: dict[str, asyncio.Task[None]] = {}
         self._prefetch_semaphore = asyncio.Semaphore(prefetch_concurrency)
@@ -85,6 +96,7 @@ class SegmentCache:
         page_url: str,
         line: int,
         manifest: str,
+        revision: str,
     ) -> str | None:
         if not self.enabled:
             return None
@@ -96,18 +108,47 @@ class SegmentCache:
         ).hexdigest()[:24]
         self._playlists[identity] = _Playlist(
             referer=page_url,
+            revision=revision,
             segments=segments,
         )
+        self._active_playlists[page_url] = identity
         self._playlists.move_to_end(identity)
         while len(self._playlists) > _MAX_PLAYLISTS:
             expired_id, _playlist = self._playlists.popitem(last=False)
             self._desired_windows.pop(expired_id, None)
+            if self._active_playlists.get(_playlist.referer) == expired_id:
+                self._active_playlists.pop(_playlist.referer, None)
         logger.debug(
             "event=segment_playlist_registered playlist=%s segments=%d",
             identity,
             len(segments),
         )
         return identity
+
+    def current_segment(
+        self,
+        page_url: str | None,
+        index: int | None,
+    ) -> SegmentLocation | None:
+        if not self.enabled or page_url is None or index is None:
+            return None
+        playlist_id = self._active_playlists.get(page_url)
+        if playlist_id is None:
+            return None
+        playlist = self._playlists.get(playlist_id)
+        if playlist is None:
+            self._active_playlists.pop(page_url, None)
+            return None
+        if not 0 <= index < len(playlist.segments):
+            return None
+        self._playlists.move_to_end(playlist_id)
+        return SegmentLocation(
+            playlist_id=playlist_id,
+            index=index,
+            url=playlist.segments[index].url,
+            referer=playlist.referer,
+            revision=playlist.revision,
+        )
 
     def start_prefetch(
         self,

@@ -38,6 +38,22 @@ def test_settings_read_log_level_from_environment(
     assert AppSettings.from_environment().log_level == "DEBUG"
 
 
+def test_settings_read_log_file_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STRM_PROXY_LOG_FILE", "logs/playback.log")
+
+    assert AppSettings.from_environment().log_file == "logs/playback.log"
+
+
+def test_empty_log_file_environment_disables_file_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STRM_PROXY_LOG_FILE", "   ")
+
+    assert AppSettings.from_environment().log_file is None
+
+
 def test_settings_reject_invalid_log_level() -> None:
     with pytest.raises(RuntimeError, match="STRM_PROXY_LOG_LEVEL"):
         AppSettings(log_level="TRACE").validate()
@@ -145,6 +161,28 @@ def test_settings_read_upstream_timeouts_from_environment(
 
     assert settings.request_timeout_seconds == 60
     assert settings.connect_timeout_seconds == 15
+
+
+def test_settings_read_upstream_proxy_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "STRM_PROXY_UPSTREAM_PROXY",
+        "http://127.0.0.1:7890",
+    )
+
+    assert AppSettings.from_environment().upstream_proxy == (
+        "http://127.0.0.1:7890"
+    )
+
+
+@pytest.mark.parametrize(
+    "proxy_url",
+    ["127.0.0.1:7890", "ftp://127.0.0.1:7890"],
+)
+def test_settings_reject_invalid_upstream_proxy(proxy_url: str) -> None:
+    with pytest.raises(RuntimeError, match="STRM_PROXY_UPSTREAM_PROXY"):
+        AppSettings(upstream_proxy=proxy_url).validate()
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 import logging
+import time
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -52,7 +53,12 @@ async def resolve(resolver: ResolverDep, page_url: str = Query(...)) -> dict:
             "member": resolved.member_token is not None,
         },
         "lines": [
-            {"index": index, "kind": candidate.kind, "url": candidate.url}
+            {
+                "index": index,
+                "name": candidate.route_name,
+                "kind": candidate.kind,
+                "url": candidate.url,
+            }
             for index, candidate in enumerate(resolved.candidates)
         ],
     }
@@ -66,57 +72,40 @@ async def play(
     playback: PlaybackCoordinatorDep,
     page_url: str = Query(...),
     source: Literal["auto", "hls", "tos", "member"] = Query("auto"),
-    line: int = Query(0, ge=0),
 ) -> RedirectResponse:
     logger.info(
-        "event=play_request page=%s source=%s preferred_line=%d",
+        "event=play_request page=%s source=%s",
         safe_url_for_log(page_url),
         source,
-        line,
     )
 
     if source == "auto":
         try:
-            result = await playback.resolve_auto(
-                resolver,
-                page_url,
-                preferred_line=line,
-            )
+            result = await playback.resolve_auto(resolver, page_url)
         except PlaybackUnavailable as exc:
             logger.warning(
-                "event=play_failed page=%s source=auto preferred_line=%d "
-                "cached=%s detail=%s",
+                "event=play_failed page=%s source=auto cached=%s detail=%s",
                 safe_url_for_log(page_url),
-                line,
                 exc.cached,
                 exc,
             )
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "no_playable_source",
-                    "message": "All advertised playback sources failed",
-                    "errors": list(exc.errors),
-                },
-                headers={
-                    "Retry-After": str(exc.retry_after_seconds),
-                    "X-STRM-Proxy-Error": "no-playable-source",
-                },
-            ) from exc
+            _raise_playback_unavailable(exc)
 
         selection = result.selection
         if selection.source == "hls":
             assert selection.line is not None
+            assert selection.revision is not None
             logger.info(
-                "event=play_selected pid=%d mode=hls line=%d "
+                "event=play_selected pid=%d mode=hls line=%d route=%s "
                 "line_count=%d strategy=%s",
                 result.resolved.pid,
                 selection.line,
+                selection.route_name,
                 len(result.resolved.candidates),
                 "selection_cache" if result.cache_hit else "explored",
             )
             return _no_store_redirect(
-                build_manifest_url(request, page_url, selection.line)
+                build_manifest_url(request, page_url, selection.revision)
             )
 
         assert result.media_url is not None
@@ -129,6 +118,32 @@ async def play(
             "selection_cache" if result.cache_hit else "explored",
         )
         return _no_store_redirect(result.media_url)
+
+    if source == "hls":
+        try:
+            result = await playback.resolve_hls(resolver, page_url)
+        except PlaybackUnavailable as exc:
+            logger.warning(
+                "event=play_failed page=%s source=hls detail=%s",
+                safe_url_for_log(page_url),
+                exc,
+            )
+            _raise_playback_unavailable(exc)
+        selection = result.selection
+        assert selection.line is not None
+        assert selection.revision is not None
+        logger.info(
+            "event=play_selected pid=%d mode=hls-explicit line=%d route=%s "
+            "line_count=%d strategy=%s",
+            result.resolved.pid,
+            selection.line,
+            selection.route_name,
+            len(result.resolved.candidates),
+            "selection_cache" if result.cache_hit else "server_selected",
+        )
+        return _no_store_redirect(
+            build_manifest_url(request, page_url, selection.revision)
+        )
 
     resolved = await resolver.resolve_page(page_url)
     if source in {"tos", "member"}:
@@ -153,32 +168,6 @@ async def play(
         )
         return _no_store_redirect(media_url)
 
-    if source == "hls":
-        if line < len(resolved.candidates):
-            logger.info(
-                "event=play_selected pid=%d mode=hls-explicit line=%d "
-                "line_count=%d",
-                resolved.pid,
-                line,
-                len(resolved.candidates),
-            )
-            return _no_store_redirect(build_manifest_url(request, page_url, line))
-        if not resolved.candidates:
-            detail = "hls: no HLS source was advertised"
-        else:
-            detail = (
-                f"hls: line {line} does not exist; "
-                f"found {len(resolved.candidates)} line(s)"
-            )
-        logger.warning(
-            "event=play_failed pid=%d source=%s preferred_line=%d detail=%s",
-            resolved.pid,
-            source,
-            line,
-            detail,
-        )
-        raise HTTPException(status_code=502, detail=detail)
-
     raise AssertionError(f"Unexpected playback source: {source}")
 
 
@@ -190,9 +179,37 @@ async def hls_manifest(
     playback: PlaybackCoordinatorDep,
     segment_cache: SegmentCacheDep,
     page_url: str = Query(...),
-    line: int = Query(0, ge=0),
+    v: str | None = Query(None, max_length=64),
 ) -> Response:
-    resolved = await resolver.resolve_page(page_url)
+    try:
+        result = await playback.resolve_hls(resolver, page_url)
+    except PlaybackUnavailable as exc:
+        logger.warning(
+            "event=hls_selection_failed page=%s cached=%s detail=%s",
+            safe_url_for_log(page_url),
+            exc.cached,
+            exc,
+        )
+        _raise_playback_unavailable(exc)
+
+    selection = result.selection
+    assert selection.line is not None
+    assert selection.revision is not None
+    line = selection.line
+    resolved = result.resolved
+    if v != selection.revision:
+        logger.info(
+            "event=hls_version_redirected pid=%d line=%d route=%s "
+            "requested=%s current=%s",
+            resolved.pid,
+            line,
+            selection.route_name,
+            v,
+            selection.revision,
+        )
+        return _no_store_redirect(
+            build_manifest_url(request, page_url, selection.revision)
+        )
     try:
         _resolved, candidate, manifest = await resolver.fetch_manifest(
             page_url=page_url,
@@ -205,9 +222,15 @@ async def hls_manifest(
             reason="manifest_fetch_failed",
         )
         raise
+    playlist_id: str | None = None
     if settings.proxy_segments:
         segment_endpoint = request.url_for("proxy_segment")
-        playlist_id = segment_cache.register_playlist(page_url, line, manifest)
+        playlist_id = segment_cache.register_playlist(
+            page_url,
+            line,
+            manifest,
+            selection.revision,
+        )
         segment_index = 0
 
         def segment_builder(segment_url: str) -> str:
@@ -215,6 +238,7 @@ async def hls_manifest(
             parameters: dict[str, str | int] = {
                 "url": segment_url,
                 "referer": page_url,
+                "v": selection.revision,
             }
             if playlist_id is not None:
                 parameters["playlist"] = playlist_id
@@ -228,9 +252,12 @@ async def hls_manifest(
             segment_builder,
         )
     logger.info(
-        "event=hls_manifest_served pid=%s line=%d proxy_segments=%s bytes=%d",
+        "event=hls_manifest_served pid=%s line=%d route=%s playlist=%s "
+        "proxy_segments=%s bytes=%d",
         getattr(_resolved, "pid", "unknown"),
         line,
+        selection.route_name,
+        playlist_id,
         settings.proxy_segments,
         len(manifest.encode()),
     )
@@ -246,14 +273,12 @@ async def strm(
     request: Request,
     page_url: str = Query(...),
     source: Literal["auto", "hls", "tos", "member"] = Query("auto"),
-    line: int = Query(0, ge=0),
 ) -> PlainTextResponse:
-    play_url = build_play_url(request, page_url, source, line)
+    play_url = build_play_url(request, page_url, source)
     logger.debug(
-        "event=strm_generated page=%s source=%s line=%d target=%s",
+        "event=strm_generated page=%s source=%s target=%s",
         safe_url_for_log(page_url),
         source,
-        line,
         safe_url_for_log(play_url),
     )
     return PlainTextResponse(play_url + "\n")
@@ -270,6 +295,7 @@ async def proxy_segment(
     referer: str | None = Query(None),
     playlist: str | None = Query(None),
     index: int | None = Query(None, ge=0),
+    v: str | None = Query(None, max_length=64),
 ) -> Response:
     try:
         parsed = urlparse(url)
@@ -290,6 +316,31 @@ async def proxy_segment(
             status_code=400,
             detail=f"Only {settings.segment_host} segments are allowed",
         )
+
+    current = segment_cache.current_segment(referer, index)
+    if current is not None and (
+        playlist != current.playlist_id
+        or v != current.revision
+        or url != current.url
+    ):
+        target = request.url_for("proxy_segment").include_query_params(
+            url=current.url,
+            referer=current.referer,
+            playlist=current.playlist_id,
+            index=current.index,
+            v=current.revision,
+        )
+        logger.info(
+            "event=segment_version_redirected old_playlist=%s "
+            "current_playlist=%s index=%d requested_revision=%s "
+            "current_revision=%s",
+            playlist,
+            current.playlist_id,
+            current.index,
+            v,
+            current.revision,
+        )
+        return _no_store_redirect(str(target))
 
     if request.method == "GET":
         segment_cache.start_prefetch(
@@ -316,19 +367,54 @@ async def proxy_segment(
                     return _cached_segment_response(payload)
 
     headers = {"Referer": referer} if referer else {}
+    client_host = request.client.host if request.client is not None else "unknown"
     logger.debug(
-        "event=segment_request method=%s target=%s referer_present=%s",
+        "event=segment_request method=%s client=%s playlist=%s index=%s "
+        "target=%s referer_present=%s range=%s accept=%s user_agent=%r",
         request.method,
+        client_host,
+        playlist,
+        index,
         safe_url_for_log(url),
         referer is not None,
+        request.headers.get("range"),
+        request.headers.get("accept"),
+        request.headers.get("user-agent"),
     )
     upstream_request = client.build_request(request.method, url, headers=headers)
+    logger.debug(
+        "event=segment_upstream_request target=%s referer=%s range=%s "
+        "accept=%s user_agent=%r",
+        safe_url_for_log(upstream_request.url),
+        safe_url_for_log(referer) if referer else None,
+        upstream_request.headers.get("range"),
+        upstream_request.headers.get("accept"),
+        upstream_request.headers.get("user-agent"),
+    )
+    upstream_started = time.perf_counter()
     try:
         upstream = await client.send(upstream_request, stream=True)
     except BaseException:
         if claim is not None:
             segment_cache.fail(claim)
         raise
+    logger.debug(
+        "event=segment_upstream_response target=%s final_target=%s status=%d "
+        "content_type=%r content_length=%r content_encoding=%r redirects=%s "
+        "headers_seconds=%.3f",
+        safe_url_for_log(url),
+        safe_url_for_log(upstream.request.url),
+        upstream.status_code,
+        upstream.headers.get("content-type"),
+        upstream.headers.get("content-length"),
+        upstream.headers.get("content-encoding"),
+        ",".join(
+            f"{response.status_code}:{safe_url_for_log(response.request.url)}"
+            for response in upstream.history
+        )
+        or "none",
+        time.perf_counter() - upstream_started,
+    )
     response_headers = {
         name: value
         for name, value in upstream.headers.items()
@@ -404,12 +490,12 @@ async def proxy_segment(
 def build_manifest_url(
     request: Request,
     page_url: str,
-    line: int = 0,
+    revision: str,
 ) -> str:
     return str(
         request.url_for("hls_manifest").include_query_params(
             page_url=page_url,
-            line=line,
+            v=revision,
         )
     )
 
@@ -418,14 +504,26 @@ def build_play_url(
     request: Request,
     page_url: str,
     source: str = "auto",
-    line: int = 0,
 ) -> str:
     url = request.url_for("play").include_query_params(page_url=page_url)
     if source != "auto":
         url = url.include_query_params(source=source)
-    if line != 0:
-        url = url.include_query_params(line=line)
     return str(url)
+
+
+def _raise_playback_unavailable(exc: PlaybackUnavailable) -> None:
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "no_playable_source",
+            "message": "All advertised playback sources failed",
+            "errors": list(exc.errors),
+        },
+        headers={
+            "Retry-After": str(exc.retry_after_seconds),
+            "X-STRM-Proxy-Error": "no-playable-source",
+        },
+    ) from exc
 
 
 def _no_store_redirect(url: str) -> RedirectResponse:

@@ -15,5 +15,6 @@ wheels/
 
 # Runtime SQLite data
 data/*.db*
+data/*.log*
 
 *.env

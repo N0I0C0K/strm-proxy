@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 
 DEFAULT_PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
@@ -48,11 +49,13 @@ class AppSettings:
     host: str = "0.0.0.0"
     port: int = 8787
     log_level: str = "INFO"
+    log_file: str | None = "data/strm-proxy.log"
     proxy_segments: bool = True
     play_selection_cache: bool = True
     segment_prefetch_seconds: float = 600.0
     segment_cache_max_mb: int = 128
     user_agent: str = DEFAULT_USER_AGENT
+    upstream_proxy: str | None = None
     request_timeout_seconds: float = 20.0
     connect_timeout_seconds: float = 10.0
     cache_ttl_seconds: float = 300.0
@@ -74,6 +77,10 @@ class AppSettings:
             host=os.getenv("STRM_PROXY_HOST", "0.0.0.0"),
             port=int(os.getenv("STRM_PROXY_PORT", "8787")),
             log_level=os.getenv("STRM_PROXY_LOG_LEVEL", "INFO").strip().upper(),
+            log_file=_optional_environment(
+                "STRM_PROXY_LOG_FILE",
+                default="data/strm-proxy.log",
+            ),
             proxy_segments=_environment_bool(
                 "STRM_PROXY_PROXY_SEGMENTS",
                 default=True,
@@ -87,6 +94,9 @@ class AppSettings:
             ),
             segment_cache_max_mb=int(
                 os.getenv("STRM_PROXY_SEGMENT_CACHE_MAX_MB", "128")
+            ),
+            upstream_proxy=_optional_environment(
+                "STRM_PROXY_UPSTREAM_PROXY"
             ),
             request_timeout_seconds=float(
                 os.getenv("STRM_PROXY_REQUEST_TIMEOUT", "20")
@@ -159,6 +169,15 @@ class AppSettings:
             raise RuntimeError(
                 "STRM_PROXY_SEGMENT_CACHE_MAX_MB must not be negative"
             )
+        if self.upstream_proxy is not None:
+            parsed_proxy = urlparse(self.upstream_proxy)
+            if (
+                parsed_proxy.scheme not in {"http", "https"}
+                or parsed_proxy.hostname is None
+            ):
+                raise RuntimeError(
+                    "STRM_PROXY_UPSTREAM_PROXY must be an http(s) proxy URL"
+                )
         if not 1 <= self.discovery_recent_limit <= 500:
             raise RuntimeError(
                 "STRM_PROXY_DISCOVERY_RECENT_LIMIT must be between 1 and 500"
@@ -205,8 +224,14 @@ def _environment_bool(name: str, *, default: bool) -> bool:
     )
 
 
-def _optional_environment(name: str) -> str | None:
+def _optional_environment(
+    name: str,
+    *,
+    default: str | None = None,
+) -> str | None:
     value = os.getenv(name)
-    if value is None or not value.strip():
+    if value is None:
+        return default
+    if not value.strip():
         return None
     return value.strip()

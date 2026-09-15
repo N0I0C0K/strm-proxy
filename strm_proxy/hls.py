@@ -117,9 +117,14 @@ async def prepare_mpeg_ts_stream(
             break
     if offset is None:
         logger.warning(
-            "event=segment_sync_not_found target=%s inspected_bytes=%d",
+            "event=segment_sync_not_found target=%s status=%d "
+            "content_type=%r content_length=%r inspected_bytes=%d prefix_hex=%s",
             safe_url_for_log(upstream.request.url),
+            upstream.status_code,
+            upstream.headers.get("content-type"),
+            upstream.headers.get("content-length"),
             len(prefix),
+            bytes(prefix[:16]).hex(),
         )
         raise ResolverError("Could not find MPEG-TS data in segment")
     logger.debug(

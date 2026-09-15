@@ -1,13 +1,14 @@
 import base64
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
 from strm_proxy.catalog import CatalogEntry
-from strm_proxy.dependencies import get_app_services
+from strm_proxy.dependencies import get_app_services, get_resolver
 from strm_proxy.config import AppSettings
 from strm_proxy.detail import parse_xlys_detail
+from strm_proxy.models import ResolvedPage, StreamCandidate
 
 
 def _app():
@@ -79,6 +80,67 @@ def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
         assert stream_file.text.startswith("http://192.168.1.20:8787/play?")
         assert "source=" not in stream_file.text
         assert "27078-0.htm" in stream_file.text
+
+
+def test_webdav_to_versioned_hls_manifest_end_to_end() -> None:
+    class HlsResolver:
+        allowed_hosts = ("www.xlys02.com", "xlys02.com")
+        candidate = StreamCandidate(
+            kind="m3u8_2",
+            url="https://vod.xl01.me/current.m3u8#iplay",
+        )
+
+        async def resolve_page(self, page_url: str) -> ResolvedPage:
+            return ResolvedPage(
+                page_url=page_url,
+                pid=204486,
+                title="痴迷",
+                candidates=(self.candidate,),
+            )
+
+        async def find_working_hls_line(
+            self,
+            page_url: str,
+            preferred_line: int = 0,
+        ) -> int:
+            return 0
+
+        async def fetch_manifest(self, page_url: str, line: int = 0):
+            return (
+                await self.resolve_page(page_url),
+                self.candidate,
+                "#EXTM3U\n#EXTINF:6,\nhttps://vod.xl01.me/current.ts\n",
+            )
+
+    application = create_app(
+        AppSettings(database_path=":memory:", proxy_segments=False)
+    )
+    application.dependency_overrides[get_resolver] = HlsResolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        stream_file = client.get("/dav/痴迷.strm", headers=_auth())
+        play = client.get(
+            stream_file.text.strip(),
+            follow_redirects=False,
+        )
+        manifest_url = play.headers["location"]
+        current = client.get(manifest_url, follow_redirects=False)
+        old = client.get(
+            "/hls.m3u8",
+            params={
+                "page_url": "https://www.xlys02.com/play/27062-0.htm",
+                "v": "old",
+            },
+            follow_redirects=False,
+        )
+
+    assert stream_file.status_code == 200
+    assert play.status_code == 302
+    assert parse_qs(urlparse(manifest_url).query)["v"][0]
+    assert current.status_code == 200
+    assert current.text.startswith("#EXTM3U")
+    assert old.status_code == 302
+    assert old.headers["location"] == manifest_url
 
 
 def test_webdav_series_catalog_lists_season_and_episode_strm() -> None:

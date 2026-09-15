@@ -45,6 +45,25 @@ export type ManualImportResult = {
   catalog: Catalog | null
 }
 
+export type PlaybackRouteOption = {
+  line: number
+  name: string | null
+  kind: string
+  selectable: boolean
+}
+
+export type PlaybackRoutes = {
+  page_url: string
+  title: string | null
+  media_kind: MediaKind
+  cache_enabled: boolean
+  cached_source: 'hls' | 'tos' | 'member' | null
+  manual_override: boolean
+  selected_line: number | null
+  selected_route_name: string | null
+  routes: PlaybackRouteOption[]
+}
+
 export const policyMeta: Record<Policy, { label: string; short: string }> = {
   auto: { label: '跟随自动更新', short: '自动' },
   keep: { label: '始终出现在片库', short: '保留' },

@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterator
+import json
 
 import pytest
 
@@ -49,6 +50,21 @@ def test_cache_remembers_verified_hls_candidate(
     assert selection is not None
     assert selection.source == "hls"
     assert selection.line == 1
+    assert selection.revision is not None
+
+
+def test_reselecting_hls_route_rotates_revision(
+    cache: PlaybackSelectionCache,
+) -> None:
+    resolved = _resolved_page()
+
+    first = cache.remember_hls(resolved, 1)
+    second = cache.remember_hls(resolved, 1, manual_override=True)
+
+    assert first.revision is not None
+    assert second.revision is not None
+    assert first.revision != second.revision
+    assert cache.get(resolved) == second
 
 
 def test_cache_invalidates_hls_when_candidate_changes(
@@ -67,6 +83,83 @@ def test_cache_invalidates_hls_when_candidate_changes(
     )
 
     assert cache.get(changed) is None
+
+
+def test_named_hls_route_survives_url_and_line_order_changes(
+    cache: PlaybackSelectionCache,
+) -> None:
+    resolved = _resolved_page(
+        candidates=(
+            StreamCandidate(
+                kind="m3u8",
+                url="https://example/slow.m3u8#inews",
+            ),
+            StreamCandidate(
+                kind="m3u8_2",
+                url="https://example/fast-old.m3u8#iplay",
+            ),
+        )
+    )
+    original = cache.remember_hls(resolved, 1)
+    changed = _resolved_page(
+        candidates=(
+            StreamCandidate(
+                kind="url3",
+                url="https://example/fast-new.m3u8#IPlay",
+            ),
+            StreamCandidate(
+                kind="m3u8",
+                url="https://example/slow-new.m3u8#inews",
+            ),
+        )
+    )
+
+    selection = cache.get(changed)
+
+    assert selection is not None
+    assert selection.line == 0
+    assert selection.route_name == "IPlay"
+    assert selection.candidate_url == "https://example/fast-new.m3u8#IPlay"
+    assert selection.revision == original.revision
+
+
+def test_legacy_hls_cache_is_upgraded_to_route_name() -> None:
+    media_repository = create_media_repository(":memory:")
+    repository = CacheRepository(media_repository.engine)
+    cache = PlaybackSelectionCache(repository)
+    resolved = _resolved_page(
+        candidates=(
+            StreamCandidate(
+                kind="m3u8",
+                url="https://example/fast.m3u8#iplay",
+            ),
+        )
+    )
+    repository.set(
+        f"playback-selection:{PAGE_URL}",
+        json.dumps(
+            {
+                "source": "hls",
+                "line": 0,
+                "candidate_kind": "m3u8",
+                "candidate_url": "https://example/fast.m3u8#iplay",
+            }
+        ),
+    )
+
+    try:
+        selection = cache.get(resolved)
+        stored = json.loads(
+            repository.get(f"playback-selection:{PAGE_URL}") or "{}"
+        )
+    finally:
+        media_repository.close()
+
+    assert selection is not None
+    assert selection.route_name == "iplay"
+    assert selection.revision is not None
+    assert stored["route_name"] == "iplay"
+    assert stored["revision"] == selection.revision
 
 
 def test_disabled_cache_neither_records_nor_returns_selection() -> None:

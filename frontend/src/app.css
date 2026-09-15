@@ -55,8 +55,10 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .service-status i { width: 7px; height: 7px; background: #4ecb93; border-radius: 50%; box-shadow: 0 0 0 3px rgba(78,203,147,.12); }
 .icon-button { width: 35px; height: 35px; display: grid; place-items: center; border: 1px solid #3e3f3a; border-radius: 8px; background: transparent; color: #bfc0b9; }
 .icon-button:hover { color: white; border-color: #64665e; }
-.workspace { width: min(1240px, calc(100% - 44px)); margin: 0 auto; padding: 54px 0 80px; }
-.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 34px; }
+.workspace,
+.page-heading { width: min(1240px, calc(100% - 44px)); margin-inline: auto; }
+.workspace { padding: 0 0 80px; }
+.page-heading { padding-top: 44px; display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 30px; }
 .page-heading h1 { margin: 0 0 8px; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(32px, 4vw, 46px); font-weight: 500; letter-spacing: -.04em; }
 .page-heading > div > p:last-child { margin: 0; color: var(--muted); font-size: 14px; }
 .heading-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; }
@@ -122,7 +124,9 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .poster img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
 .movie-copy { min-width: 0; padding-left: 59px; }
 .movie-title-line { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.movie-title-line h3 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; letter-spacing: -.01em; }
+.movie-title-line h3 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; letter-spacing: -.01em; }
+.route-button { width: 25px; height: 25px; flex: none; display: grid; place-items: center; border: 1px solid #ddd9cf; border-radius: 6px; background: #f8f6f0; color: #77736b; }
+.route-button:hover { border-color: #a99f90; background: white; color: var(--accent-dark); }
 .media-tags { min-width: 0; margin-top: 5px; display: flex; align-items: center; gap: 5px; overflow: hidden; }
 .media-tags span { flex: none; color: #8b8a83; background: #eeece5; border-radius: 4px; padding: 2px 5px; font-size: 10px; line-height: 1.2; }
 .media-tags span.media-kind { color: var(--green); background: #e6f3ec; font-weight: 750; }
@@ -161,8 +165,10 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .modal-layer { position: fixed; z-index: 20; inset: 0; background: rgba(24,24,21,.58); backdrop-filter: blur(3px); }
 .confirm-dialog { width: min(430px, calc(100% - 48px)); padding: 27px; position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 0; outline: 0; border-radius: 14px; background: var(--paper); box-shadow: 0 24px 80px rgba(0,0,0,.25); }
 .import-dialog { width: min(570px, calc(100% - 40px)); padding: 27px; position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 0; outline: 0; border-radius: 14px; background: var(--paper); box-shadow: 0 24px 80px rgba(0,0,0,.25); }
+.route-dialog { width: min(540px, calc(100% - 40px)); max-height: min(720px, calc(100vh - 40px)); padding: 27px; position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: auto; border: 0; outline: 0; border-radius: 14px; background: var(--paper); box-shadow: 0 24px 80px rgba(0,0,0,.25); }
 .dialog-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 10px; background: #fff0eb; color: #b33d28; }
 .dialog-icon.import { flex: 0 0 auto; background: #eeeafa; color: var(--purple); }
+.dialog-icon.route { flex: 0 0 auto; background: #e8f2ee; color: #317459; }
 .confirm-dialog h2 { margin: 20px 0 9px; font-size: 21px; letter-spacing: -.025em; }
 .confirm-dialog p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .import-heading { display: flex; align-items: flex-start; gap: 14px; }
@@ -184,10 +190,27 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .import-result p { margin: 0; color: #6f6e68; font-size: 11px; }
 .import-result small { display: flex; align-items: center; gap: 4px; color: #77718a; font-size: 10px; }
 .import-result > a { align-self: start; padding: 3px; color: #8a8981; }
+.route-loading { min-height: 190px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); font-size: 13px; }
+.route-status { margin-top: 22px; padding: 11px 13px; display: flex; align-items: center; gap: 8px; border: 1px solid #dedbd2; border-radius: 9px; background: #f8f6f0; color: #5c5a54; font-size: 12px; }
+.route-status > span { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--purple); box-shadow: 0 0 0 4px rgba(115,89,167,.1); }
+.route-status > span.manual { background: var(--green); box-shadow: 0 0 0 4px rgba(64,143,107,.1); }
+.route-status small { margin-left: auto; color: #99968d; }
+.route-options { margin-top: 12px; display: grid; gap: 7px; }
+.route-options button { width: 100%; min-height: 56px; padding: 8px 12px; display: flex; align-items: center; gap: 11px; text-align: left; border: 1px solid #dedbd2; border-radius: 9px; background: white; color: #57554f; }
+.route-options button:hover:not(:disabled) { border-color: #aaa297; background: #fbfaf6; }
+.route-options button.active { border-color: #70a98f; background: #f1f8f4; color: #246449; box-shadow: 0 0 0 2px rgba(64,143,107,.08); }
+.route-options button:disabled { cursor: not-allowed; opacity: .55; }
+.route-number { width: 29px; height: 29px; flex: none; display: grid; place-items: center; border-radius: 7px; background: #eeece5; color: #77736b; font: 700 12px/1 system-ui; }
+.route-options button.active .route-number { background: #dceee5; color: #246449; }
+.route-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.route-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.route-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #99968d; font-size: 10px; }
+.route-error { margin-top: 18px; }
 .dialog-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions button { min-width: 84px; height: 38px; border: 1px solid #d5d3ca; border-radius: 8px; background: white; color: #595852; font-size: 12px; font-weight: 700; }
 .dialog-actions button.confirm-import { min-width: 118px; border-color: var(--ink); background: var(--ink); color: white; display: flex; align-items: center; justify-content: center; gap: 7px; }
 .dialog-actions button.confirm-delete { border-color: #ba422d; background: #ba422d; color: white; display: flex; align-items: center; justify-content: center; gap: 7px; }
+.dialog-actions button.restore-route { margin-right: auto; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -197,8 +220,8 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
   .login-brand h1 { font-size: 40px; }
   .login-intro { margin: 20px 0 28px; }
   .login-panel { padding: 42px 28px; }
-  .workspace { width: min(100% - 28px, 1240px); padding-top: 36px; }
-  .page-heading { align-items: flex-start; }
+  .workspace, .page-heading { width: min(100% - 28px, 1240px); }
+  .page-heading { padding-top: 36px; align-items: flex-start; }
   .heading-actions { flex-direction: column-reverse; align-items: stretch; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .metrics button:nth-child(2) { border-right: 0; }
@@ -215,7 +238,7 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 @media (max-width: 560px) {
   .topbar { padding: 0 16px; }
   .service-status { display: none; }
-  .page-heading { display: grid; }
+  .page-heading { padding-top: 28px; display: grid; gap: 22px; margin-bottom: 24px; }
   .sync-button { width: 100%; }
   .metrics button { padding: 15px; }
   .catalog-toolbar { align-items: stretch; flex-direction: column; }

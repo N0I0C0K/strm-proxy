@@ -62,7 +62,7 @@ uv run strm-proxy
 http://127.0.0.1:8787/docs
 ```
 
-管理界面位于 `http://127.0.0.1:8787/admin/`，登录账号与 WebDAV 相同。首次运行或前端代码变化后先构建静态文件：
+管理界面位于 `http://127.0.0.1:8787/admin/`，登录账号与 WebDAV 相同。影片标题旁的线路按钮会实时读取该播放页的线路名称，可将某个视频固定到 `iplay` 等命名线路，或清除选择恢复自动探索。首次运行或前端代码变化后先构建静态文件：
 
 ```powershell
 cd frontend
@@ -103,10 +103,12 @@ $env:STRM_PROXY_DAV_PASSWORD = 'change-me'
 $env:STRM_PROXY_DAV_FILENAME = '痴迷.strm'
 $env:STRM_PROXY_PAGE_URL = 'https://www.xlys02.com/play/27062-0.htm'
 $env:STRM_PROXY_PROXY_SEGMENTS = 'true'
+$env:STRM_PROXY_UPSTREAM_PROXY = 'http://127.0.0.1:7890'
 $env:STRM_PROXY_PLAY_SELECTION_CACHE = 'true'
 $env:STRM_PROXY_SEGMENT_PREFETCH_SECONDS = '600'
 $env:STRM_PROXY_SEGMENT_CACHE_MAX_MB = '128'
 $env:STRM_PROXY_LOG_LEVEL = 'INFO'
+$env:STRM_PROXY_LOG_FILE = 'data/strm-proxy.log'
 $env:STRM_PROXY_XLYS_USERNAME = 'your-xlys-username'
 $env:STRM_PROXY_XLYS_PASSWORD = 'your-xlys-password-cookie'
 $env:STRM_PROXY_REQUEST_TIMEOUT = '20'
@@ -127,7 +129,9 @@ uv run strm-proxy
 
 默认数据库位于 `data/strm-proxy.db`。数据库为空时，第一次扫描电影目录会抓取列表并写入；数据库已有影片后，服务重启和 WebDAV 扫描都不会再次访问列表页。本阶段尚未加入定时刷新。
 
-`STRM_PROXY_XLYS_USERNAME` 和 `STRM_PROXY_XLYS_PASSWORD` 必须同时设置或同时省略。它们会作为 `username`、`password` Cookie 仅发送给配置的 xlys 域名，不会发送到 MP4 或 TS CDN。`/play?source=auto` 固定按 `TOS → member → 探测 HLS` 的顺序选择来源。默认开启的 `STRM_PROXY_PLAY_SELECTION_CACHE` 会在 SQLite 的通用 `cache_entries` 表中记住最近验证成功的自动播放方向；命中后直接复用该 source 或 HLS line，不再探索其他路径，服务重启后仍然有效。同一播放页的并发请求会合并为一个视频级探索任务，即使最初的客户端超时或断开，该任务也会继续完成并写入缓存。所有来源失败时会短暂缓存失败结果并返回带 `Retry-After` 的 `503`。`ptoken` 只表示存在需要算术验证码的会员线路，不会被误当作验证码提交；当前版本尚未启用自动 OCR，member 失败后会继续回退 HLS。
+`STRM_PROXY_XLYS_USERNAME` 和 `STRM_PROXY_XLYS_PASSWORD` 必须同时设置或同时省略。它们会作为 `username`、`password` Cookie 仅发送给配置的 xlys 域名，不会发送到 MP4 或 TS CDN。`/play?source=auto` 固定按 `TOS → member → 探测 HLS` 的顺序选择来源。默认开启的 `STRM_PROXY_PLAY_SELECTION_CACHE` 会在 SQLite 的通用 `cache_entries` 表中记住最近验证成功的自动播放方向；命中后直接复用该 source 或 HLS 线路，不再探索其他路径，服务重启后仍然有效。带 `#iplay` 一类 fragment 的候选会按线路名称保存，即使上游换序或更新 URL 也能重新定位；管理页的人工选择使用同一层持久缓存，并标记为人工覆盖。同一播放页的并发请求会合并为一个视频级探索任务，即使最初的客户端超时或断开，该任务也会继续完成并写入缓存。所有来源失败时会短暂缓存失败结果并返回带 `Retry-After` 的 `503`。`ptoken` 只表示存在需要算术验证码的会员线路，不会被误当作验证码提交；当前版本尚未启用自动 OCR，member 失败后会继续回退 HLS。
+
+若浏览器通过本机代理访问上游，而服务端直连媒体 CDN 很慢，可设置 `STRM_PROXY_UPSTREAM_PROXY`。播放页、`/lines`、manifest、前台分片和后台预读会统一通过该 HTTP(S) 代理；未设置时保持直连。代理 URL 可能包含凭据，因此启动日志只记录是否启用，不输出完整地址。
 
 `media_items` 统一保存电影和电视剧元数据及豆瓣评分，`episodes` 保存电视剧分集及源站真实播放路径，`cache_entries` 保存通用键值缓存；旧版 `movies` 表会在启动时迁移后移除。`policy` 支持 `auto`、`keep`、`hidden`；每次同步会替换已经不在当前发现集合中的 `auto` 记录，同时保留人工 `keep` 和 `hidden`。解析后的页面线路和标准 M3U8 仍在内存中缓存 5 分钟。
 
@@ -197,11 +201,11 @@ uv run strm-proxy
 $env:STRM_PROXY_PLAY_SELECTION_CACHE = 'false'
 ```
 
-缓存只作用于 `source=auto`，不会改变显式 `source=hls|tos|member`。播放决策长期保存在 SQLite 中；上游 HLS 候选变化或缓存方向获取失败时会自动删除。所有来源均不可用的结果缓存 30 秒，避免播放器高频重试反复压垮上游。
+播放决策长期保存在 SQLite 中；HLS 以线路名称作为稳定身份，每次解析页面后再映射为当次内部 ID。数字 line 不再写入 STRM、`/play` 重定向或 `/hls.m3u8` URL；旧 URL 即使残留 `line=N` 也会被忽略。HLS 选择另带持久化的 `v` 版本号，`/play` 会跳转到 `/hls.m3u8?page_url=...&v=...`。管理页重新选择线路、缓存失效后重新探索时版本号会更新；不带版本或携带旧版本的请求会以 `Cache-Control: no-store` 的 `302` 跳转到当前版本，避免播放器继续复用旧 manifest 和旧分片 URL。线路名仅因上游换序而映射到新数字 ID 时版本保持不变。所有来源均不可用的结果缓存 30 秒，避免播放器高频重试反复压垮上游。
 
 HLS 选线行为直接由传输模式决定：分片代理开启时，包装线路和原生线路都可由服务端处理，采用首个探测成功的健康线路；分片代理关闭时，优先原生 TS/fMP4，只有不存在健康原生线路时才回退包装线路。
 
-分片代理开启时，服务会把已经去除包装的 TS 保存在全局内存 LRU 缓存中。TV 请求某个分片后，后台以最多 2 路并发向后预读约 600 秒；达到时间窗口、播放列表末尾或全局 128 MiB 容量任一条件即停止。相同分片的并发请求共享一个上游下载，缓存命中则直接从内存返回。可通过 `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` 调整前向时长，通过 `STRM_PROXY_SEGMENT_CACHE_MAX_MB` 调整全局容量；容量设为 `0` 会同时关闭分片缓存和预读。该缓存不落盘，服务重启后清空，且在 `STRM_PROXY_PROXY_SEGMENTS=false` 时不启用。
+分片代理开启时，服务会把已经去除包装的 TS 保存在全局内存 LRU 缓存中。TV 请求某个分片后，后台以最多 2 路并发向后预读约 600 秒；达到时间窗口、播放列表末尾或全局 128 MiB 容量任一条件即停止。相同分片的并发请求共享一个上游下载，缓存命中则直接从内存返回。每个分片 URL 同时携带 HLS revision、playlist 和 index；若播放器仍请求旧 playlist，服务会按 index 以不缓存的 `302` 重定向到当前线路的对应分片，而不会继续代理旧 URL。可通过 `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` 调整前向时长，通过 `STRM_PROXY_SEGMENT_CACHE_MAX_MB` 调整全局容量；容量设为 `0` 会同时关闭分片缓存、预读和旧分片重定向。该缓存不落盘，服务重启后清空，且在 `STRM_PROXY_PROXY_SEGMENTS=false` 时不启用。
 
 修改这些环境变量后需要重启服务。旧 STRM URL 即使仍带有 `proxy_segments` 查询参数，服务也会忽略它并使用全局配置。
 
@@ -217,7 +221,7 @@ Invoke-WebRequest "http://127.0.0.1:8787/strm?page_url=$page" | Select-Object -E
 
 ## 日志与排查
 
-应用日志默认写到标准输出，与 Uvicorn 访问日志一起由终端、Docker 或 systemd 收集。默认级别为 `INFO`：记录播放页解析结果、动态线路数量、TOS 回退、HLS 并行探测、最终选中的 source/line、WebDAV 扫描数量和资源同步结果。
+应用日志和 Uvicorn 访问日志会同时写到标准输出与 `data/strm-proxy.log`。文件按 10 MiB 轮转并保留 5 个历史文件，避免长期运行占满磁盘；将 `STRM_PROXY_LOG_FILE` 设为空字符串可关闭文件日志。每次进程启动生成一个短 `run=<id>` 并附在所有日志上，重启前后的请求可以直接按 run ID 区分。默认级别为 `INFO`：记录播放页解析结果、动态线路数量、TOS 回退、HLS 并行探测、最终选中的 source/线路名/内部 line、WebDAV 扫描数量和资源同步结果。
 
 需要排查某个播放失败时，在启动前临时开启 `DEBUG`：
 
@@ -251,6 +255,8 @@ event=segment_prefetch_failed
 event=segment_upstream_error
 ```
 
+排查“浏览器可播但 TV 不可播”时，优先保留一次失败时间点，并对照日志中的 `segment_request`、`segment_upstream_response` 和 `segment_sync_not_found`。它们分别记录 TV 的 Range/User-Agent、上游最终地址和响应类型，以及无法识别 TS 时的前 16 字节十六进制签名。上游链路为 HTTPS，系统抓包只能观察握手、重传、吞吐和断连；要比较浏览器实际 HTTP 请求头，应从浏览器开发者工具导出 HAR，再与同一时间段的服务日志对照。
+
 日志中的 URL 会去掉用户名、密码、查询参数和 fragment，因此不会记录 Cookie、动态签名或临时媒体 token。HTTPX/HTTPCore 自带的完整请求 URL 日志固定压到 `WARNING`；Uvicorn 访问日志仍保留客户端、方法、路径和状态码，但会删除查询串。排查结束后可切回 `INFO`，避免高频分片产生过多日志。
 
 ## 接口
@@ -258,7 +264,7 @@ event=segment_upstream_error
 - `GET /health`：健康检查。
 - `GET /resolve?page_url=...`：查看 PID、HLS 线路及 TOS/会员能力。
 - `GET /play?page_url=...`：稳定播放入口；默认 `source=auto`，命中持久化决策时直接复用，否则按 TOS、member、HLS 顺序探索。
-- `GET /hls.m3u8?page_url=...&line=0`：返回标准 HLS manifest；是否代理 TS 由全局环境变量决定。
+- `GET /hls.m3u8?page_url=...&v=...`：按服务端缓存/探索结果返回标准 HLS manifest；缺少或使用旧 `v` 时重定向到当前版本，是否代理 TS 由全局环境变量决定。
 - `GET /strm?page_url=...`：返回指向 `/play`、适合写入 `.strm` 的单行 URL；默认不固化 `source`。
 - `GET /segment?...`：TS 分片解包代理，只允许 `vod.xl01.me`。
 - `GET /api/admin/movies`：返回管理界面的全部影片和策略统计，需要 Basic Auth。
@@ -267,6 +273,9 @@ event=segment_upstream_error
 - `DELETE /api/admin/movies/batch`：批量删除数据库影片记录。
 - `POST /api/admin/import`：通过详情页网址手动添加；电影和电视剧都会写入数据库并设为人工保留。
 - `POST /api/admin/sync`：立即从来源同步最新影片。
+- `GET /api/admin/media/{xlys_id}/playback-routes`：实时读取可用 HLS 线路名称和当前缓存选择。
+- `PUT /api/admin/media/{xlys_id}/playback-routes`：按 `route_name` 人工固定该视频的 HLS 线路。
+- `DELETE /api/admin/media/{xlys_id}/playback-routes`：清除人工/自动选择并恢复自动探索。
 
 ## 测试
 

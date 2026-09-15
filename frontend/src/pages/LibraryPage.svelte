@@ -5,9 +5,10 @@
   import DeleteConfirmDialog from '../components/DeleteConfirmDialog.svelte'
   import ImportDialog from '../components/ImportDialog.svelte'
   import MediaCatalog from '../components/MediaCatalog.svelte'
+  import PlaybackRouteDialog from '../components/PlaybackRouteDialog.svelte'
   import { adminApi } from '../lib/admin-api'
   import { filterAndSortMedia, recount } from '../lib/catalog'
-  import type { Catalog, LayoutMode, ManualImportResult, Media, MediaTypeFilter, Policy } from '../lib/types'
+  import type { Catalog, LayoutMode, ManualImportResult, Media, MediaTypeFilter, PlaybackRoutes, Policy } from '../lib/types'
 
   export let credentials: string
   export let initialCatalog: Catalog
@@ -21,6 +22,11 @@
   let bulkBusy = false
   let deleteConfirm = false
   let manualOpen = false
+  let routeOpen = false
+  let routeMedia: Media | null = null
+  let routeData: PlaybackRoutes | null = null
+  let routeBusy = false
+  let routeError = ''
   let query = ''
   let policyFilter: 'all' | Policy = 'all'
   let mediaTypeFilter: MediaTypeFilter = 'all'
@@ -109,6 +115,61 @@
     selected = new Set()
   }
 
+  async function openPlaybackRoutes(media: Media) {
+    routeMedia = media
+    routeData = null
+    routeError = ''
+    routeOpen = true
+    routeBusy = true
+    try {
+      routeData = await adminApi<PlaybackRoutes>(credentials, `/media/${media.xlys_id}/playback-routes`)
+    } catch (error) {
+      routeError = error instanceof Error ? error.message : '读取播放线路失败'
+    } finally {
+      routeBusy = false
+    }
+  }
+
+  async function selectPlaybackRoute(routeName: string) {
+    if (!routeMedia || routeBusy) return
+    routeBusy = true
+    routeError = ''
+    try {
+      routeData = await adminApi<PlaybackRoutes>(credentials, `/media/${routeMedia.xlys_id}/playback-routes`, {
+        method: 'PUT',
+        body: JSON.stringify({ route_name: routeName }),
+      })
+    } catch (error) {
+      routeError = error instanceof Error ? error.message : '保存播放线路失败'
+    } finally {
+      routeBusy = false
+    }
+  }
+
+  async function restoreAutomaticRoute() {
+    if (!routeMedia || routeBusy) return
+    routeBusy = true
+    routeError = ''
+    try {
+      await adminApi<{ cleared: true; page_url: string }>(credentials, `/media/${routeMedia.xlys_id}/playback-routes`, {
+        method: 'DELETE',
+      })
+      if (routeData) {
+        routeData = {
+          ...routeData,
+          cached_source: null,
+          manual_override: false,
+          selected_line: null,
+          selected_route_name: null,
+        }
+      }
+    } catch (error) {
+      routeError = error instanceof Error ? error.message : '恢复自动选择失败'
+    } finally {
+      routeBusy = false
+    }
+  }
+
   function resetFilters() {
     query = ''
     policyFilter = 'all'
@@ -123,9 +184,10 @@
     <section class="catalog-panel">
       <CatalogToolbar bind:layoutMode bind:mediaTypeFilter bind:sortOrder bind:query resultCount={sortedMedia.length} />
       {#if pageError}<div class="page-error" role="alert">{pageError}</div>{/if}
-      <MediaCatalog media={sortedMedia} {layoutMode} {selected} {updating} {bulkBusy} onSelectionChange={(value) => (selected = value)} onUpdatePolicy={updatePolicy} onBulkPolicy={bulkPolicy} onDelete={() => (deleteConfirm = true)} onResetFilters={resetFilters} />
+      <MediaCatalog media={sortedMedia} {layoutMode} {selected} {updating} {bulkBusy} onSelectionChange={(value) => (selected = value)} onUpdatePolicy={updatePolicy} onConfigureRoute={openPlaybackRoutes} onBulkPolicy={bulkPolicy} onDelete={() => (deleteConfirm = true)} onResetFilters={resetFilters} />
     </section>
   </main>
   <DeleteConfirmDialog bind:open={deleteConfirm} count={selected.size} busy={bulkBusy} onDelete={deleteSelected} />
   <ImportDialog bind:open={manualOpen} onImport={importUrl} onCatalogImported={applyImportedCatalog} />
+  <PlaybackRouteDialog bind:open={routeOpen} media={routeMedia} routes={routeData} busy={routeBusy} error={routeError} onSelect={selectPlaybackRoute} onRestoreAuto={restoreAutomaticRoute} />
 </div>

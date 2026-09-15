@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -31,6 +32,7 @@ class _StubResolver:
         self.direct_url = direct_url
         self.healthy_hls_line = healthy_hls_line
         self.direct_source_calls: list[str] = []
+        self.fetch_manifest_lines: list[int] = []
         self.resolve_page_calls = 0
         self.working_hls_line_calls = 0
 
@@ -43,11 +45,11 @@ class _StubResolver:
             candidates=(
                 StreamCandidate(
                     kind="m3u8",
-                    url="https://www.xlys02.com/wrapped.m3u8",
+                    url="https://www.xlys02.com/wrapped.m3u8#inews",
                 ),
                 StreamCandidate(
                     kind="m3u8_2",
-                    url="https://www.xlys02.com/wrapped-2.m3u8",
+                    url="https://www.xlys02.com/wrapped-2.m3u8#iplay",
                 ),
             ),
             tos_available=self.tos_available,
@@ -74,6 +76,7 @@ class _StubResolver:
         line: int = 0,
         segment_url_builder=None,
     ):
+        self.fetch_manifest_lines.append(line)
         segment_url = "https://vod.xl01.me/abc.ts"
         if segment_url_builder is not None:
             segment_url = segment_url_builder(segment_url)
@@ -340,6 +343,8 @@ def test_play_auto_falls_back_to_local_hls() -> None:
     assert response.headers["location"].startswith(
         "http://192.168.1.20:8787/hls.m3u8?"
     )
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["v"][0]
 
 
 def test_play_auto_explores_hls_when_direct_source_fails() -> None:
@@ -359,7 +364,7 @@ def test_play_auto_explores_hls_when_direct_source_fails() -> None:
     assert resolver.resolve_page_calls == 1
     assert resolver.direct_source_calls == ["tos"]
     assert resolver.working_hls_line_calls == 1
-    assert "line=1" in response.headers["location"]
+    assert "line=" not in response.headers["location"]
 
 
 def test_play_preserves_tos_then_member_source_priority() -> None:
@@ -411,7 +416,7 @@ def test_play_falls_back_to_first_healthy_hls_line() -> None:
     assert response.status_code == 302
     assert resolver.direct_source_calls == ["tos"]
     assert resolver.working_hls_line_calls == 1
-    assert "line=1" in response.headers["location"]
+    assert "line=" not in response.headers["location"]
 
 
 def test_play_reuses_cached_hls_direction_before_other_sources() -> None:
@@ -437,7 +442,7 @@ def test_play_reuses_cached_hls_direction_before_other_sources() -> None:
 
     assert first.status_code == 302
     assert second.status_code == 302
-    assert "line=1" in second.headers["location"]
+    assert "line=" not in second.headers["location"]
     assert resolver.direct_source_calls == ["tos", "member"]
     assert resolver.working_hls_line_calls == 1
 
@@ -568,11 +573,12 @@ def test_play_failure_returns_retryable_503_and_is_cached() -> None:
     assert resolver.working_hls_line_calls == 1
 
 
-def test_play_explicit_hls_keeps_the_requested_line() -> None:
+def test_play_explicit_hls_ignores_legacy_line_and_selects_server_side() -> None:
     application = create_app(AppSettings(database_path=":memory:"))
-    application.dependency_overrides[get_resolver] = lambda: _StubResolver(
+    resolver = _StubResolver(
         healthy_hls_line=1,
     )
+    application.dependency_overrides[get_resolver] = lambda: resolver
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
         response = client.get(
@@ -582,4 +588,138 @@ def test_play_explicit_hls_keeps_the_requested_line() -> None:
         )
 
     assert response.status_code == 302
-    assert "line=0" in response.headers["location"]
+    assert "line=" not in response.headers["location"]
+    assert resolver.working_hls_line_calls == 1
+
+
+def test_hls_ignores_legacy_line_and_remaps_cached_route_name() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = _StubResolver(healthy_hls_line=0)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        resolved = asyncio.run(resolver.resolve_page(PAGE_URL))
+        get_app_services(application).playback.cache.remember_hls(
+            resolved,
+            1,
+            manual_override=True,
+        )
+        response = client.get(
+            "/hls.m3u8",
+            params={"page_url": PAGE_URL, "line": 0},
+        )
+
+    assert response.status_code == 200
+    assert resolver.fetch_manifest_lines == [1]
+    assert resolver.working_hls_line_calls == 0
+
+
+def test_hls_redirects_old_revision_to_current_before_fetching_manifest() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = _StubResolver(healthy_hls_line=0)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        resolved = asyncio.run(resolver.resolve_page(PAGE_URL))
+        selection = get_app_services(
+            application
+        ).playback.cache.remember_hls(resolved, 1, manual_override=True)
+        response = client.get(
+            "/hls.m3u8",
+            params={"page_url": PAGE_URL, "v": "stale"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers["cache-control"] == "no-store"
+        assert resolver.fetch_manifest_lines == []
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        assert query["v"] == [selection.revision]
+
+        current = client.get(response.headers["location"])
+
+    assert current.status_code == 200
+    assert resolver.fetch_manifest_lines == [1]
+
+
+def test_hls_without_revision_redirects_to_current_revision() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = _StubResolver(healthy_hls_line=1)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        response = client.get(
+            "/hls.m3u8",
+            params={"page_url": PAGE_URL},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert resolver.fetch_manifest_lines == []
+        location = response.headers["location"]
+        assert parse_qs(urlparse(location).query)["v"][0]
+
+        current = client.get(location)
+
+    assert current.status_code == 200
+    assert resolver.fetch_manifest_lines == [1]
+    assert resolver.working_hls_line_calls == 1
+
+
+def test_hls_revision_is_stable_when_selection_cache_is_disabled() -> None:
+    application = create_app(
+        AppSettings(database_path=":memory:", play_selection_cache=False)
+    )
+    resolver = _StubResolver(healthy_hls_line=1)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        old = client.get(
+            "/hls.m3u8",
+            params={"page_url": PAGE_URL},
+            follow_redirects=False,
+        )
+        current = client.get(old.headers["location"], follow_redirects=False)
+
+    assert old.status_code == 302
+    assert current.status_code == 200
+    assert resolver.fetch_manifest_lines == [1]
+    assert resolver.working_hls_line_calls == 2
+
+
+def test_stale_segment_redirects_to_current_playlist_and_revision() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = _StubResolver(healthy_hls_line=1)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        play = client.get(
+            "/play",
+            params={"page_url": PAGE_URL},
+            follow_redirects=False,
+        )
+        manifest = client.get(play.headers["location"])
+        current_segment_url = next(
+            line for line in manifest.text.splitlines() if not line.startswith("#")
+        )
+        current_query = parse_qs(urlparse(current_segment_url).query)
+
+        stale = client.get(
+            "/segment",
+            params={
+                "url": "https://vod.xl01.me/old.ts",
+                "referer": PAGE_URL,
+                "playlist": "old-playlist",
+                "index": 0,
+                "v": "old-revision",
+            },
+            follow_redirects=False,
+        )
+
+    redirected_query = parse_qs(urlparse(stale.headers["location"]).query)
+    assert stale.status_code == 302
+    assert stale.headers["cache-control"] == "no-store"
+    assert redirected_query["url"] == current_query["url"]
+    assert redirected_query["playlist"] == current_query["playlist"]
+    assert redirected_query["index"] == ["0"]
+    assert redirected_query["v"] == current_query["v"]

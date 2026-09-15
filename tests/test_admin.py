@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from strm_proxy.app import create_app
 from strm_proxy.catalog import CatalogEntry
 from strm_proxy.config import AppSettings
-from strm_proxy.dependencies import get_app_services, get_http_client
+from strm_proxy.dependencies import get_app_services, get_http_client, get_resolver
+from strm_proxy.models import ResolvedPage, StreamCandidate
 
 
 def _auth() -> dict[str, str]:
@@ -112,6 +113,89 @@ def test_admin_batch_updates_and_deletes_movies() -> None:
             "movies": 1,
             "series": 0,
         }
+
+
+def test_admin_can_select_named_playback_route_and_restore_auto() -> None:
+    class StubResolver:
+        def __init__(self) -> None:
+            self.candidates = (
+                StreamCandidate("m3u8", "https://cdn/slow.m3u8#inews"),
+                StreamCandidate("m3u8_2", "https://cdn/fast.m3u8#iplay"),
+                StreamCandidate("url3", "https://cdn/unnamed.m3u8"),
+            )
+            self.refreshes: list[bool] = []
+
+        async def resolve_page(
+            self,
+            page_url: str,
+            *,
+            refresh: bool = False,
+        ) -> ResolvedPage:
+            self.refreshes.append(refresh)
+            return ResolvedPage(
+                page_url=page_url,
+                pid=204486,
+                title="阳光女子合唱团",
+                candidates=self.candidates,
+            )
+
+    resolver = StubResolver()
+    application = create_app(AppSettings(database_path=":memory:"))
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application) as client:
+        services = get_app_services(application)
+        services.media_repository.import_discovered_movies((_movie(),))
+
+        routes = client.get(
+            "/api/admin/media/27078/playback-routes",
+            headers=_auth(),
+        )
+        assert routes.status_code == 200
+        assert [item["name"] for item in routes.json()["routes"]] == [
+            "inews",
+            "iplay",
+            None,
+        ]
+        assert routes.json()["routes"][2]["selectable"] is False
+
+        selected = client.put(
+            "/api/admin/media/27078/playback-routes",
+            headers=_auth(),
+            json={"route_name": "iplay"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["selected_line"] == 1
+        assert selected.json()["selected_route_name"] == "iplay"
+        assert selected.json()["manual_override"] is True
+
+        resolver.candidates = (
+            StreamCandidate("url3", "https://cdn/fast-new.m3u8#iplay"),
+            StreamCandidate("m3u8", "https://cdn/slow-new.m3u8#inews"),
+        )
+        remapped = client.get(
+            "/api/admin/media/27078/playback-routes",
+            headers=_auth(),
+        )
+        assert remapped.status_code == 200
+        assert remapped.json()["selected_line"] == 0
+        assert remapped.json()["selected_route_name"] == "iplay"
+
+        cleared = client.delete(
+            "/api/admin/media/27078/playback-routes",
+            headers=_auth(),
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["cleared"] is True
+        assert services.playback.cache.get(
+            ResolvedPage(
+                page_url=cleared.json()["page_url"],
+                pid=204486,
+                title="阳光女子合唱团",
+                candidates=resolver.candidates,
+            )
+        ) is None
+        assert resolver.refreshes == [True, False, True]
 
 
 def test_admin_manual_movie_import_keeps_movie() -> None:

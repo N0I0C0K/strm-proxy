@@ -53,6 +53,8 @@ def test_extract_candidates_prefers_m3u8_fields_and_deduplicates() -> None:
         ("m3u8", "https://www.xlys02.com/a.m3u8#iplay"),
         ("m3u8_2", "https://www.xlys02.com/b.m3u8"),
     ]
+    assert candidates[0].route_name == "iplay"
+    assert candidates[1].route_name is None
 
 
 def test_direct_media_candidates_rewrite_tos_objects_to_playable_cdn() -> None:

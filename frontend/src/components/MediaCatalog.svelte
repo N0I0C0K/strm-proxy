@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Checkbox, Select, Toolbar } from 'bits-ui'
-  import { Check, ChevronDown, EyeOff, LoaderCircle, Search, Star, Trash2 } from 'lucide-svelte'
+  import { Check, ChevronDown, EyeOff, LoaderCircle, Search, Star, Trash2, Waypoints } from 'lucide-svelte'
   import { policyOptions, type LayoutMode, type Media, type Policy } from '../lib/types'
 
   export let media: Media[]
@@ -10,6 +10,7 @@
   export let bulkBusy = false
   export let onSelectionChange: (selection: Set<number>) => void
   export let onUpdatePolicy: (media: Media, policy: Policy) => void
+  export let onConfigureRoute: (media: Media) => void
   export let onBulkPolicy: (policy: Policy) => void
   export let onDelete: () => void
   export let onResetFilters: () => void
@@ -116,7 +117,10 @@
           {#if item.cover_url}<img src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={imageFailed} />{/if}
         </a>
         <div class="movie-copy">
-          <div class="movie-title-line"><h3>{item.title}</h3></div>
+          <div class="movie-title-line">
+            <h3>{item.title}</h3>
+            <button class="route-button" type="button" onclick={() => onConfigureRoute(item)} title="选择播放线路" aria-label={`选择《${item.title}》的播放线路`}><Waypoints size={13} /></button>
+          </div>
           <div class="media-tags">
             <span class:series-kind={item.kind === 'series'} class="media-kind">{item.kind === 'series' ? '电视剧' : '电影'}</span>
             {#if item.year}<span>{item.year}</span>{/if}

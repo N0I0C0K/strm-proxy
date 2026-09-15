@@ -155,9 +155,14 @@ class XlysResolver:
             cache_ttl_seconds
         )
 
-    async def resolve_page(self, page_url: str) -> ResolvedPage:
+    async def resolve_page(
+        self,
+        page_url: str,
+        *,
+        refresh: bool = False,
+    ) -> ResolvedPage:
         page_url = validate_page_url(page_url, self.allowed_hosts)
-        if cached := self._page_cache.get(page_url):
+        if not refresh and (cached := self._page_cache.get(page_url)):
             logger.debug(
                 "event=page_cache_hit page=%s pid=%d",
                 safe_url_for_log(page_url),

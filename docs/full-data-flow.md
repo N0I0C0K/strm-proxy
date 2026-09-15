@@ -43,7 +43,8 @@ flowchart TD
         C2 --> C3["计算时间戳动态签名"]
         C3 --> C4["请求 xlys /lines"]
         C4 --> CC{"播放决策缓存命中？"}
-        CC -->|HLS 命中| C10["302 到本服务 /hls.m3u8<br/>复用缓存 line"]
+        CM["管理页按 #iplay 等线路名<br/>人工固定或恢复自动"] -.-> CC
+        CC -->|HLS 命中| C10["按名称重定位内部 line<br/>302 到带当前 v、无 line 的 /hls.m3u8"]
         CC -->|TOS/member 命中| CR["只重新获取并验证<br/>缓存的 direct source"]
         CR -->|成功| C8["302 到直连媒体 CDN<br/>Cache-Control: no-store"]
         CR -->|失败并清除缓存| C41["优先尝试 TOS<br/>取得并验证直连对象"]
@@ -52,18 +53,25 @@ flowchart TD
         C41 -->|成功并缓存方向| C8
         C42 -->|成功并缓存方向| C8
         C42 -->|不可用| C9["并行探测动态 HLS lines<br/>任一健康线路可先返回"]
-        C9 -->|缓存成功 line| C10
+        C9 -->|缓存成功线路名| C10
         C9 -->|全部失败| CE
     end
 
     subgraph D["四、媒体数据面"]
         C8 --> D0["TV 直接 Range 请求 MP4 CDN<br/>206 video/mp4"]
         D0 --> D9["TV 解复用并播放音视频"]
-        C10 --> D1["下载包装后的 M3U8"]
+        C10 --> DV{"请求 v 是当前版本？"}
+        DV -- "否/缺失" --> DR["302 到当前 v<br/>Cache-Control: no-store"]
+        DR --> DV
+        DV -- "是" --> D1["下载包装后的 M3U8"]
         D1 --> D2["去掉固定前缀并解压<br/>得到标准 #EXTM3U"]
         D2 --> D3{"全局分片代理是否开启"}
-        D3 -- "开启" --> D4["清单改写为本服务 /segment<br/>附加 playlist + index"]
-        D4 --> DC{"清洗后 TS<br/>内存缓存命中？"}
+        D3 -- "开启" --> D4["清单改写为本服务 /segment<br/>附加 revision + playlist + index"]
+        D4 --> DS{"分片仍属于当前 playlist？"}
+        DC{"清洗后 TS<br/>内存缓存命中？"}
+        DS -- "否" --> DX["按 index 302 到<br/>当前线路对应分片"]
+        DX --> DC
+        DS -- "是" --> DC
         DC -- "命中" --> D6["直接从内存以 video/mp2t<br/>返回 TV"]
         DC -- "未命中" --> D5["本服务请求上游 TS<br/>寻找 MPEG-TS 同步位置"]
         D5 --> D6
@@ -80,7 +88,7 @@ flowchart TD
 
 - SQLite 保存媒体元数据、策略、电视剧分集路径，以及通用 `cache_entries` 中的长期播放决策和 30 秒失败结果；不保存影片内容。
 - 播放页解析结果和还原后的 M3U8 默认在内存中缓存 5 分钟。
-- `source=auto` 最近验证成功的播放方向默认长期保存在 SQLite；命中后直接复用，候选变化或获取失败时删除。
+- `source=auto` 最近验证成功的播放方向默认长期保存在 SQLite；命名 HLS 按 URL fragment（如 `#iplay`）在实时候选中重新定位。管理页可以人工覆盖或清除同一条记录；名称消失、变得不唯一或获取失败时删除。
 - 同一进程按 `page_url` 合并并发探索；客户端超时或断开不会取消共享任务，探索成功后仍会写入缓存。
 - 所有来源失败时 `/play` 返回 `503`、`Retry-After` 和结构化错误，不生成错误视频。
 - `/god` 返回的 MP4 地址不写入 SQLite 或 STRM；TOS 每次播放重新获取并验证，随后由 TV 直连 CDN。

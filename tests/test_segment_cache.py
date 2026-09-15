@@ -94,6 +94,7 @@ def test_prefetch_uses_extinf_window_and_caches_clean_ts() -> None:
                 "https://www.xlys02.com/play/1-0.htm",
                 0,
                 _manifest(4),
+                "revision-1",
             )
             assert playlist is not None
 
@@ -132,6 +133,49 @@ def test_zero_capacity_disables_registration_and_caching() -> None:
             )
 
             assert cache.enabled is False
-            assert cache.register_playlist("https://page", 0, _manifest(2)) is None
+            assert (
+                cache.register_playlist(
+                    "https://page",
+                    0,
+                    _manifest(2),
+                    "revision-1",
+                )
+                is None
+            )
+
+    asyncio.run(scenario())
+
+
+def test_current_segment_tracks_latest_playlist_by_page_and_index() -> None:
+    async def scenario() -> None:
+        async with httpx.AsyncClient() as client:
+            cache = SegmentCache(
+                client,
+                segment_host="vod.xl01.me",
+                max_bytes=1024,
+                prefetch_seconds=600,
+            )
+            page_url = "https://www.xlys02.com/play/1-0.htm"
+            first = cache.register_playlist(
+                page_url,
+                0,
+                _manifest(2),
+                "revision-1",
+            )
+            second_manifest = _manifest(2).replace("/1.ts", "/new-1.ts")
+            second = cache.register_playlist(
+                page_url,
+                1,
+                second_manifest,
+                "revision-2",
+            )
+
+            location = cache.current_segment(page_url, 1)
+
+            assert first != second
+            assert location is not None
+            assert location.playlist_id == second
+            assert location.url == "https://vod.xl01.me/new-1.ts"
+            assert location.revision == "revision-2"
 
     asyncio.run(scenario())

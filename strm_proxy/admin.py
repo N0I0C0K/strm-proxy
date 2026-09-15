@@ -7,16 +7,20 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .catalog import CatalogEntry, movie_filename
-from .database import MediaItem, MediaType, MoviePolicy
+from .database import MediaItem, MediaRepository, MediaType, MoviePolicy
 from .dependencies import (
     AdminAuthDep,
     HttpClientDep,
     MediaLibraryDep,
     MediaRepositoryDep,
+    PlaybackCoordinatorDep,
+    ResolverDep,
     SettingsDep,
 )
 from .detail import fetch_xlys_detail
 from .library import MediaLibrary
+from .models import ResolvedPage
+from .playback_selection import PlaybackCoordinator
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -80,6 +84,34 @@ class ManualImportResult(BaseModel):
     catalog: MovieCatalog | None = None
 
 
+class PlaybackRouteOption(BaseModel):
+    line: int
+    name: str | None
+    kind: str
+    selectable: bool
+
+
+class PlaybackRoutes(BaseModel):
+    page_url: str
+    title: str | None
+    media_kind: Literal["movie", "series"]
+    cache_enabled: bool
+    cached_source: Literal["hls", "tos", "member"] | None
+    manual_override: bool
+    selected_line: int | None
+    selected_route_name: str | None
+    routes: list[PlaybackRouteOption]
+
+
+class PlaybackRouteUpdate(BaseModel):
+    route_name: str = Field(min_length=1, max_length=128)
+
+
+class PlaybackRouteClearResult(BaseModel):
+    cleared: Literal[True] = True
+    page_url: str
+
+
 @router.get("/movies", response_model=MovieCatalog, include_in_schema=False)
 @router.get("/media", response_model=MovieCatalog)
 async def list_movies(
@@ -140,6 +172,92 @@ async def sync_movies(
 ) -> MovieCatalog:
     await library.sync_from_source()
     return _catalog(repository.list_media(), library)
+
+
+@router.get(
+    "/media/{xlys_id}/playback-routes",
+    response_model=PlaybackRoutes,
+)
+async def get_playback_routes(
+    xlys_id: int,
+    _auth: AdminAuthDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+    resolver: ResolverDep,
+    playback: PlaybackCoordinatorDep,
+) -> PlaybackRoutes:
+    media = _require_media(repository, xlys_id)
+    page_url = _media_play_page_url(media, repository, library)
+    resolved = await resolver.resolve_page(page_url, refresh=True)
+    return _playback_routes(media, resolved, playback)
+
+
+@router.put(
+    "/media/{xlys_id}/playback-routes",
+    response_model=PlaybackRoutes,
+)
+async def set_playback_route(
+    xlys_id: int,
+    update: PlaybackRouteUpdate,
+    _auth: AdminAuthDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+    resolver: ResolverDep,
+    playback: PlaybackCoordinatorDep,
+) -> PlaybackRoutes:
+    if not playback.cache.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Playback selection cache is disabled",
+        )
+    media = _require_media(repository, xlys_id)
+    page_url = _media_play_page_url(media, repository, library)
+    resolved = await resolver.resolve_page(page_url)
+    wanted = update.route_name.casefold()
+    matches = [
+        index
+        for index, candidate in enumerate(resolved.candidates)
+        if candidate.route_name is not None
+        and candidate.route_name.casefold() == wanted
+    ]
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Playback route {update.route_name!r} is not available",
+        )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Playback route {update.route_name!r} is ambiguous",
+        )
+    playback.cache.remember_hls(
+        resolved,
+        matches[0],
+        manual_override=True,
+    )
+    return _playback_routes(media, resolved, playback)
+
+
+@router.delete(
+    "/media/{xlys_id}/playback-routes",
+    response_model=PlaybackRouteClearResult,
+)
+async def clear_playback_route(
+    xlys_id: int,
+    _auth: AdminAuthDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+    playback: PlaybackCoordinatorDep,
+) -> PlaybackRouteClearResult:
+    if not playback.cache.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Playback selection cache is disabled",
+        )
+    media = _require_media(repository, xlys_id)
+    page_url = _media_play_page_url(media, repository, library)
+    playback.cache.clear(page_url)
+    return PlaybackRouteClearResult(page_url=page_url)
 
 
 @router.post("/import", response_model=ManualImportResult)
@@ -224,6 +342,62 @@ def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatal
         movies=[_movie_item(movie, library) for movie in movies],
         counts=counts,
         recent_limit=library.recent_limit,
+    )
+
+
+def _require_media(repository: MediaRepository, xlys_id: int) -> MediaItem:
+    media = repository.get_media(xlys_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return media
+
+
+def _media_play_page_url(
+    media: MediaItem,
+    repository: MediaRepository,
+    library: MediaLibrary,
+) -> str:
+    if media.media_type == MediaType.SERIES.value:
+        episodes = repository.list_episodes(media.xlys_id)
+        if episodes:
+            return library.episode_play_url(media, episodes[0])
+    return library.movie_play_url(media)
+
+
+def _playback_routes(
+    media: MediaItem,
+    resolved: ResolvedPage,
+    playback: PlaybackCoordinator,
+) -> PlaybackRoutes:
+    selection = playback.cache.get(resolved)
+    return PlaybackRoutes(
+        page_url=resolved.page_url,
+        title=resolved.title,
+        media_kind=media.media_type,
+        cache_enabled=playback.cache.enabled,
+        cached_source=selection.source if selection is not None else None,
+        manual_override=(
+            selection.manual_override if selection is not None else False
+        ),
+        selected_line=(
+            selection.line
+            if selection is not None and selection.source == "hls"
+            else None
+        ),
+        selected_route_name=(
+            selection.route_name
+            if selection is not None and selection.source == "hls"
+            else None
+        ),
+        routes=[
+            PlaybackRouteOption(
+                line=index,
+                name=candidate.route_name,
+                kind=candidate.kind,
+                selectable=candidate.route_name is not None,
+            )
+            for index, candidate in enumerate(resolved.candidates)
+        ],
     )
 
 

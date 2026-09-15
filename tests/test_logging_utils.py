@@ -1,8 +1,10 @@
 import logging
+from pathlib import Path
 
 import httpx
 
 from strm_proxy.logging_utils import (
+    RUN_ID,
     configure_logging,
     describe_http_error,
     safe_url_for_log,
@@ -80,3 +82,23 @@ def test_logging_removes_queries_from_uvicorn_access_records() -> None:
         '192.168.1.13:1234 - "GET /segment HTTP/1.1" 200'
     )
     assert "secret" not in record.getMessage()
+
+
+def test_logging_writes_application_and_access_records_to_file() -> None:
+    log_file = Path("data/test-strm-proxy.log").resolve()
+    log_file.unlink(missing_ok=True)
+    try:
+        configure_logging("INFO", str(log_file))
+        logging.getLogger("strm_proxy.test").info("event=file_log_test")
+        logging.getLogger("uvicorn.access").info("event=access_log_test")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+
+        content = log_file.read_text(encoding="utf-8")
+    finally:
+        configure_logging("INFO", None)
+        log_file.unlink(missing_ok=True)
+
+    assert "event=file_log_test" in content
+    assert "event=access_log_test" in content
+    assert f"run={RUN_ID}" in content

@@ -53,18 +53,20 @@ def build_xlys_cookie_jar(settings: AppSettings) -> httpx.Cookies:
 def create_app(settings: AppSettings | None = None) -> FastAPI:
     settings = settings or AppSettings.from_environment()
     settings.validate()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_file)
     prefer_raw_segments = not settings.proxy_segments
     logger.info(
-        "event=app_config host=%s port=%d log_level=%s proxy_segments=%s "
+        "event=app_config host=%s port=%d log_level=%s log_file=%s "
+        "proxy_segments=%s "
         "play_selection_cache=%s hls_selection=%s "
         "segment_cache_enabled=%s segment_prefetch_seconds=%s "
         "segment_cache_max_mb=%d "
-        "xlys_login=%s request_timeout_seconds=%s "
+        "xlys_login=%s upstream_proxy=%s request_timeout_seconds=%s "
         "connect_timeout_seconds=%s cache_ttl_seconds=%s database=%s",
         settings.host,
         settings.port,
         settings.log_level,
+        settings.log_file,
         settings.proxy_segments,
         settings.play_selection_cache,
         "raw_first" if prefer_raw_segments else "first_healthy",
@@ -72,6 +74,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         settings.segment_prefetch_seconds,
         settings.segment_cache_max_mb,
         settings.has_xlys_login,
+        settings.upstream_proxy is not None,
         settings.request_timeout_seconds,
         settings.connect_timeout_seconds,
         settings.cache_ttl_seconds,
@@ -88,11 +91,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 settings.request_timeout_seconds,
                 connect=settings.connect_timeout_seconds,
             ),
-            transport=httpx.AsyncHTTPTransport(retries=2),
+            transport=httpx.AsyncHTTPTransport(
+                retries=2,
+                proxy=settings.upstream_proxy,
+            ),
             headers={
                 "User-Agent": settings.user_agent,
                 "Accept-Encoding": "identity",
-                "Connection": "close",
             },
             cookies=build_xlys_cookie_jar(settings),
         ) as client:
@@ -219,5 +224,6 @@ def run() -> None:
         host=default_settings.host,
         port=default_settings.port,
         log_level=default_settings.log_level.lower(),
+        log_config=None,
         reload=False,
     )
