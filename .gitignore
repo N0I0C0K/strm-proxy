@@ -13,8 +13,13 @@ wheels/
 # Virtual environments
 .venv
 
-# Runtime SQLite data
-data/*.db*
-data/*.log*
-
+# Runtime data and local credentials
+data/
+.env
+.env.*
 *.env
+*.env.*
+*.pem
+*.key
+*.p12
+*.pfx

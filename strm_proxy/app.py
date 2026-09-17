@@ -160,7 +160,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 logger.info("event=app_stop")
 
     application = FastAPI(
-        title="STRM HLS Proxy Demo",
+        title="STRM Proxy",
         version="0.1.0",
         lifespan=lifespan,
     )
