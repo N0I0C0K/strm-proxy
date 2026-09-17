@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy import (
     CheckConstraint,
@@ -19,6 +21,7 @@ from sqlalchemy import (
     create_engine,
     delete as sql_delete,
     event,
+    func,
     inspect,
     select,
     text,
@@ -82,6 +85,7 @@ class MediaItem(Base):
     source_updated_on: Mapped[date | None] = mapped_column(Date)
     source_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_watched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     policy: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -309,6 +313,97 @@ class MediaRepository:
         with self._sessions() as session:
             return session.get(MediaItem, xlys_id)
 
+    def episode_counts(self) -> dict[int, int]:
+        """Count stored episodes in one query for catalog cards."""
+        with self._sessions() as session:
+            return dict(session.execute(
+                select(Episode.media_xlys_id, func.count(Episode.id))
+                .group_by(Episode.media_xlys_id)
+            ).all())
+
+    def mark_series_watched(self, page_url: str) -> None:
+        """Record successful episode playback for a known series only."""
+        parsed = urlparse(page_url)
+        match = re.fullmatch(r"/(?:[^/]+/)?play/(\d+)-(\d+)\.htm", parsed.path)
+        if match is None:
+            return
+        xlys_id, source_index = map(int, match.groups())
+        with self._sessions.begin() as session:
+            known_episode = session.scalar(
+                select(Episode.id).join(MediaItem).where(
+                    Episode.media_xlys_id == xlys_id,
+                    Episode.source_index == source_index,
+                    Episode.play_path == parsed.path,
+                    MediaItem.media_type == MediaType.SERIES.value,
+                )
+            )
+            if known_episode is not None:
+                session.execute(
+                    sql_update(MediaItem)
+                    .where(MediaItem.xlys_id == xlys_id)
+                    .values(last_watched_at=datetime.now(timezone.utc))
+                )
+
+    def recently_watched_series(self, *, days: int = 30) -> tuple[MediaItem, ...]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with self._sessions() as session:
+            return tuple(
+                session.scalars(
+                    select(MediaItem)
+                    .where(
+                        MediaItem.media_type == MediaType.SERIES.value,
+                        MediaItem.last_watched_at >= cutoff,
+                    )
+                    .order_by(MediaItem.last_watched_at.desc(), MediaItem.xlys_id)
+                )
+            )
+
+    def refresh_media_from_detail(self, detail: XlysDetail) -> int:
+        """Update an existing item from its detail page without changing policy or DAV name."""
+        with self._sessions.begin() as session:
+            media = session.get(MediaItem, detail.xlys_id)
+            if media is None or media.media_type != detail.kind:
+                raise ValueError("Media no longer matches its detail page")
+            media.title = detail.title
+            media.year = detail.year
+            media.cover_url = detail.cover_url or media.cover_url
+            media.source_url = detail.source_url
+            media.last_checked_at = datetime.now(timezone.utc)
+            if detail.source_updated_on:
+                media.source_updated_on = _parse_source_date(detail.source_updated_on)
+                media.source_modified_at = _date_at_utc_midnight(detail.source_updated_on)
+            if detail.kind != MediaType.SERIES.value:
+                return 0
+            media.season_number = detail.season_number
+            media.declared_episode_count = detail.declared_episode_count
+            existing = {
+                episode.source_index: episode
+                for episode in session.scalars(
+                    select(Episode).where(Episode.media_xlys_id == detail.xlys_id)
+                )
+            }
+            added = 0
+            discovered = {episode.source_index for episode in detail.episodes}
+            for item in detail.episodes:
+                episode = existing.get(item.source_index)
+                if episode is None:
+                    session.add(
+                        Episode(
+                            media_xlys_id=detail.xlys_id,
+                            source_index=item.source_index,
+                            label=item.label,
+                            play_path=item.play_path,
+                        )
+                    )
+                    added += 1
+                else:
+                    episode.label = item.label
+                    episode.play_path = item.play_path
+            for source_index, episode in existing.items():
+                if source_index not in discovered:
+                    session.delete(episode)
+            return added
+
     def set_media_policy(self, xlys_id: int, policy: MoviePolicy) -> bool:
         with self._sessions.begin() as session:
             media = session.get(MediaItem, xlys_id)
@@ -416,6 +511,7 @@ class MediaRepository:
         detail_by_id = {detail.xlys_id: detail for detail in details}
         active_ids = {entry.xlys_id for entry in entries}
         checked_at = datetime.now(timezone.utc)
+        watched_cutoff = checked_at - timedelta(days=30)
         with self._sessions.begin() as session:
             if replace_auto:
                 session.execute(
@@ -423,6 +519,10 @@ class MediaRepository:
                         MediaItem.media_type == MediaType.SERIES.value,
                         MediaItem.policy == MoviePolicy.AUTO.value,
                         MediaItem.xlys_id.not_in(active_ids),
+                        (
+                            MediaItem.last_watched_at.is_(None)
+                            | (MediaItem.last_watched_at < watched_cutoff)
+                        ),
                     )
                 )
             for entry in entries:
@@ -700,6 +800,11 @@ def _upgrade_media_schema(engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE media_items ADD COLUMN douban_rating FLOAT")
+            )
+    if "last_watched_at" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE media_items ADD COLUMN last_watched_at DATETIME")
             )
     if "episodes" in inspector.get_table_names():
         episode_columns = {

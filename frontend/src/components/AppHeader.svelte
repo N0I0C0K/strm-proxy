@@ -1,9 +1,13 @@
 <script lang="ts">
   import { Button } from 'bits-ui'
-  import { CirclePlus, Film, LoaderCircle, LogOut, RefreshCw } from 'lucide-svelte'
+  import { CirclePlus, Film, LogOut, RefreshCw } from 'lucide-svelte'
 
   export let syncing = false
+  export let recentRefreshing = false
+  export let itemRefreshing = false
+  export let recentSeriesCount = 0
   export let onSync: () => void
+  export let onRefreshRecent: () => void
   export let onManualImport: () => void
   export let onLogout: () => void
 </script>
@@ -27,7 +31,10 @@
   </div>
   <div class="heading-actions">
     <Button.Root class="manual-button" onclick={onManualImport}><CirclePlus size={17} />手动添加</Button.Root>
-    <Button.Root class="sync-button" onclick={onSync} disabled={syncing}>
+    <Button.Root class="manual-button" onclick={onRefreshRecent} disabled={recentRefreshing || syncing || itemRefreshing || recentSeriesCount === 0} title="刷新近 30 天播放过的电视剧详情页和分集">
+      <RefreshCw class={recentRefreshing ? 'spin' : undefined} size={17} />{recentRefreshing ? '正在刷新' : `刷新最近看过的电视剧（${recentSeriesCount}）`}
+    </Button.Root>
+    <Button.Root class="sync-button" onclick={onSync} disabled={syncing || recentRefreshing || itemRefreshing}>
       <RefreshCw class={syncing ? 'spin' : undefined} size={17} />{syncing ? '正在同步' : '立即同步'}
     </Button.Root>
   </div>

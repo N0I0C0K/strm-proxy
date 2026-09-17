@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 from fastapi.testclient import TestClient
@@ -8,7 +9,14 @@ from fastapi.testclient import TestClient
 from strm_proxy.app import create_app
 from strm_proxy.catalog import CatalogEntry
 from strm_proxy.config import AppSettings
-from strm_proxy.dependencies import get_app_services, get_http_client, get_resolver
+from strm_proxy.database import MoviePolicy
+from strm_proxy.dependencies import (
+    get_app_services,
+    get_http_client,
+    get_playback,
+    get_resolver,
+)
+from strm_proxy.detail import XlysDetail, XlysEpisode
 from strm_proxy.models import ResolvedPage, StreamCandidate
 
 
@@ -277,3 +285,201 @@ def test_admin_manual_series_import_writes_series_and_episodes() -> None:
             assert len(repository.list_episodes(27085)) == 2
     finally:
         asyncio.run(mock_client.aclose())
+
+
+def _series(xlys_id: int) -> tuple[CatalogEntry, XlysDetail]:
+    url = f"https://www.xlys02.com/guoju/{xlys_id}.htm"
+    entry = CatalogEntry(
+        xlys_id=xlys_id,
+        title=f"测试剧{xlys_id}",
+        year=2026,
+        cover_url=None,
+        source_updated_on="2026-09-01",
+        dav_filename=f"测试剧{xlys_id} (2026).strm",
+        source_url=url,
+    )
+    detail = XlysDetail(
+        xlys_id=xlys_id,
+        kind="series",
+        category="guoju",
+        title=entry.title,
+        year=2026,
+        season_number=1,
+        cover_url=None,
+        declared_episode_count=10,
+        episodes=(
+            XlysEpisode(0, "第1集", f"/play/{xlys_id}-0.htm"),
+            XlysEpisode(1, "第2集", f"/play/{xlys_id}-1.htm"),
+        ),
+        source_updated_on=None,
+        source_url=url,
+    )
+    return entry, detail
+
+
+def test_admin_refreshes_one_series_and_preserves_policy() -> None:
+    entry, detail = _series(27085)
+    html = """
+    <h1 class="movie-title">测试剧新版 第一季 (2026)</h1>
+    <div class="info-item"><span class="info-label">集数：</span><span class="info-value">12</span></div>
+    <a class="play-item" href="/play/27085-0.htm">第1集</a>
+    <a class="play-item" href="/play/27085-2.htm">第3集</a>
+    """
+    application = create_app(AppSettings(database_path=":memory:"))
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=html))
+    )
+    application.dependency_overrides[get_http_client] = lambda: mock_client
+    try:
+        with TestClient(application) as client:
+            repository = get_app_services(application).media_repository
+            repository.import_discovered_series((entry,), (detail,))
+            repository.set_series_policy(27085, MoviePolicy.KEEP)
+            old_name = repository.get_series(27085).dav_name
+            unauthorized = client.post("/api/admin/media/27085/refresh")
+            assert unauthorized.status_code == 401
+            refreshed = client.post("/api/admin/media/27085/refresh", headers=_auth())
+            assert refreshed.status_code == 200
+            assert refreshed.json()["item"]["added_episodes"] == 1
+            assert refreshed.json()["item"]["available_episode_count"] == 2
+            stored = repository.get_series(27085)
+            assert stored.title == "测试剧新版 第一季"
+            assert stored.declared_episode_count == 12
+            assert stored.policy == "keep"
+            assert stored.dav_name == old_name
+            assert [episode.source_index for episode in repository.list_episodes(27085)] == [0, 2]
+            assert client.post("/api/admin/media/99999/refresh", headers=_auth()).status_code == 404
+    finally:
+        asyncio.run(mock_client.aclose())
+
+
+def test_admin_refreshes_movie_without_changing_policy_or_dav_name() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    html = """
+    <h1 class="movie-title">电影新版 (2026)</h1>
+    <a class="play-item" href="/play/27078-0.htm">在线播放</a>
+    """
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=html))
+    )
+    application.dependency_overrides[get_http_client] = lambda: mock_client
+    try:
+        with TestClient(application) as client:
+            repository = get_app_services(application).media_repository
+            repository.import_discovered_movies((_movie(),))
+            assert client.post(
+                "/api/admin/media/27078/refresh", headers=_auth()
+            ).status_code == 409
+            repository.import_discovered_movies((CatalogEntry(
+                xlys_id=27078,
+                title="原名",
+                year=2025,
+                cover_url=None,
+                source_updated_on="2026-09-01",
+                dav_filename="原名 (2025).strm",
+                source_url="https://www.xlys02.com/juqing/27078.htm",
+            ),))
+            repository.set_movie_policy(27078, MoviePolicy.KEEP)
+            original_name = repository.get_movie(27078).dav_name
+            result = client.post("/api/admin/media/27078/refresh", headers=_auth())
+            assert result.status_code == 200
+            assert result.json()["item"]["kind"] == "movie"
+            assert result.json()["item"]["added_episodes"] == 0
+            stored = repository.get_movie(27078)
+            assert stored.title == "电影新版"
+            assert stored.year == 2026
+            assert stored.policy == "keep"
+            assert stored.dav_name == original_name
+    finally:
+        asyncio.run(mock_client.aclose())
+
+
+def test_recent_series_refresh_uses_successful_get_playback_only() -> None:
+    first, first_detail = _series(27085)
+    second, second_detail = _series(27086)
+    unwatched, unwatched_detail = _series(27087)
+
+    class Playback:
+        async def resolve_auto(self, _resolver, page_url):
+            return SimpleNamespace(
+                selection=SimpleNamespace(source="tos"),
+                resolved=SimpleNamespace(pid=1),
+                media_url="https://cdn.example/movie.mp4",
+                cache_hit=False,
+            )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("27086.htm"):
+            return httpx.Response(500)
+        assert request.url.path.endswith("27085.htm")
+        return httpx.Response(200, text="""
+            <h1 class="movie-title">测试剧27085 (2026)</h1>
+            <a class="play-item" href="/play/27085-0.htm">第1集</a>
+            <a class="play-item" href="/play/27085-1.htm">第2集</a>
+            <a class="play-item" href="/play/27085-2.htm">第3集</a>
+        """)
+
+    application = create_app(AppSettings(database_path=":memory:"))
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    application.dependency_overrides[get_http_client] = lambda: mock_client
+    application.dependency_overrides[get_playback] = Playback
+    try:
+        with TestClient(application) as client:
+            repository = get_app_services(application).media_repository
+            repository.import_discovered_series(
+                (first, second, unwatched),
+                (first_detail, second_detail, unwatched_detail),
+            )
+            repository.import_discovered_movies((_movie(),))
+            for xlys_id in (27085, 27086):
+                play_url = f"https://www.xlys02.com/play/{xlys_id}-0.htm"
+                assert client.head("/play", params={"page_url": play_url}, follow_redirects=False).status_code == 302
+                assert repository.get_series(xlys_id).last_watched_at is None
+                assert client.get("/play", params={"page_url": play_url}, follow_redirects=False).status_code == 302
+            assert len(repository.recently_watched_series()) == 2
+            assert client.get("/api/admin/media", headers=_auth()).json()["recently_watched_series_count"] == 2
+            result = client.post("/api/admin/media/refresh-recent-series", headers=_auth())
+            assert result.status_code == 200
+            assert result.json()["checked"] == 2
+            assert result.json()["refreshed"] == 1
+            assert result.json()["added_episodes"] == 1
+            assert result.json()["failures"][0]["xlys_id"] == 27086
+            assert len(repository.list_episodes(27085)) == 3
+            assert len(repository.list_episodes(27087)) == 2
+    finally:
+        asyncio.run(mock_client.aclose())
+
+
+def test_admin_media_detail_and_catalog_episode_counts() -> None:
+    entry, detail = _series(27085)
+    application = create_app(AppSettings(database_path=":memory:"))
+    with TestClient(application) as client:
+        repository = get_app_services(application).media_repository
+        repository.import_discovered_movies((_movie(),))
+        repository.import_discovered_series((entry,), (detail,))
+
+        listing = client.get("/api/admin/media", headers=_auth())
+        assert listing.status_code == 200
+        cards = {item["xlys_id"]: item for item in listing.json()["movies"]}
+        assert cards[27085]["available_episode_count"] == 2
+        assert cards[27078]["available_episode_count"] == 0
+
+        assert client.get("/api/admin/media/27085").status_code == 401
+        response = client.get("/api/admin/media/27085", headers=_auth())
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["source_url"] == entry.source_url
+        assert payload["declared_episode_count"] == 10
+        assert payload["season_number"] == 1
+        assert payload["available_episode_count"] == 2
+        assert [episode["source_index"] for episode in payload["episodes"]] == [0, 1]
+        assert payload["episodes"][1]["play_page_url"].endswith("/play/27085-1.htm")
+        assert payload["last_checked_at"] is not None
+
+        updated = client.patch(
+            "/api/admin/media/27085/policy",
+            headers=_auth(),
+            json={"policy": "hidden"},
+        )
+        assert updated.json()["available_episode_count"] == 2
+        assert client.get("/api/admin/media/99999", headers=_auth()).status_code == 404

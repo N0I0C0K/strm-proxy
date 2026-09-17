@@ -80,6 +80,7 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
         "source_updated_on",
         "source_modified_at",
         "last_checked_at",
+        "last_watched_at",
         "policy",
         "dav_name",
     }
@@ -109,6 +110,37 @@ def test_generic_cache_supports_values_expiration_and_deletion() -> None:
     assert cache.get("expired") is None
     cache.delete("active")
     assert cache.get("active") is None
+    repository.close()
+
+
+def test_recently_watched_series_survives_catalog_rotation() -> None:
+    repository = create_media_repository(":memory:")
+
+    def series(xlys_id: int) -> CatalogEntry:
+        return CatalogEntry(
+            xlys_id=xlys_id,
+            title=f"电视剧{xlys_id}",
+            year=2026,
+            cover_url=None,
+            source_updated_on="2026-09-01",
+            dav_filename=f"电视剧{xlys_id} (2026).strm",
+            source_url=f"https://www.xlys02.com/guoju/{xlys_id}.htm",
+            available_episode_count=1,
+        )
+
+    repository.import_discovered_series((series(1),), ())
+    repository.mark_series_watched("https://www.xlys02.com/play/1-0.htm")
+    repository.import_discovered_series((series(2),), (), replace_auto=True)
+
+    assert repository.get_series(1) is not None
+    assert [item.xlys_id for item in repository.recently_watched_series()] == [1]
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE media_items SET last_watched_at = :watched WHERE xlys_id = 1"),
+            {"watched": datetime.now(timezone.utc) - timedelta(days=31)},
+        )
+    repository.import_discovered_series((series(3),), (), replace_auto=True)
+    assert repository.get_series(1) is None
     repository.close()
 
 

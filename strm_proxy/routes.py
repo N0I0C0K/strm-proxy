@@ -13,6 +13,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, StreamingResp
 
 from .dependencies import (
     HttpClientDep,
+    MediaRepositoryDep,
     PlaybackCoordinatorDep,
     ResolverDep,
     SegmentCacheDep,
@@ -70,6 +71,7 @@ async def play(
     request: Request,
     resolver: ResolverDep,
     playback: PlaybackCoordinatorDep,
+    repository: MediaRepositoryDep,
     page_url: str = Query(...),
     source: Literal["auto", "hls", "tos", "member"] = Query("auto"),
 ) -> RedirectResponse:
@@ -92,6 +94,8 @@ async def play(
             _raise_playback_unavailable(exc)
 
         selection = result.selection
+        if request.method == "GET":
+            repository.mark_series_watched(page_url)
         if selection.source == "hls":
             assert selection.line is not None
             assert selection.revision is not None
@@ -130,6 +134,8 @@ async def play(
             )
             _raise_playback_unavailable(exc)
         selection = result.selection
+        if request.method == "GET":
+            repository.mark_series_watched(page_url)
         assert selection.line is not None
         assert selection.revision is not None
         logger.info(
@@ -166,6 +172,8 @@ async def play(
             source,
             safe_url_for_log(media_url),
         )
+        if request.method == "GET":
+            repository.mark_series_watched(page_url)
         return _no_store_redirect(media_url)
 
     raise AssertionError(f"Unexpected playback source: {source}")

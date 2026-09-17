@@ -14,6 +14,16 @@ export type Media = {
   dav_filename: string
   play_page_url: string
   kind: MediaKind
+  available_episode_count: number
+}
+
+export type MediaDetail = Media & {
+  source_url: string | null
+  declared_episode_count: number | null
+  season_number: number | null
+  last_checked_at: string | null
+  last_watched_at: string | null
+  episodes: { source_index: number; label: string; play_page_url: string }[]
 }
 
 export type CatalogCounts = {
@@ -29,6 +39,25 @@ export type Catalog = {
   movies: Media[]
   counts: CatalogCounts
   recent_limit: number
+  recently_watched_series_count: number
+}
+
+export type RefreshItem = {
+  xlys_id: number
+  title: string
+  kind: MediaKind
+  added_episodes: number
+  available_episode_count: number
+}
+
+export type RefreshResult = { item: RefreshItem; catalog: Catalog }
+
+export type RecentRefreshResult = {
+  checked: number
+  refreshed: number
+  added_episodes: number
+  failures: { xlys_id: number; title: string; error: string }[]
+  catalog: Catalog
 }
 
 export type ManualImportResult = {

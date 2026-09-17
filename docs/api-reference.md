@@ -276,6 +276,9 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 | `dav_filename` | string | 否 | WebDAV 文件名或电视剧目录名 |
 | `play_page_url` | string | 否 | 电影首集或媒体播放页 URL |
 | `kind` | enum | 否 | `movie` 或 `series` |
+| `available_episode_count` | integer | 否 | 已收录分集数；电影为 `0` |
+
+成功的 `GET /play` 请求会记录已入库电视剧的最近播放时间；`HEAD /play` 和 WebDAV 扫描不会记录。该记录从启用此版本后开始积累。
 
 策略含义：
 
@@ -298,17 +301,23 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
     "movies": 0,
     "series": 0
   },
-  "recent_limit": 50
+  "recent_limit": 50,
+  "recently_watched_series_count": 0
 }
 ```
 
 `movies` 字段同样是历史名称，数组中可能包含 `kind=series` 的电视剧。
+`recently_watched_series_count` 是近 30 天通过 `/play` 播放过的已入库电视剧数量。
 
 ### 3.3 `GET /api/admin/media`
 
 返回数据库中全部受管理媒体，包括 `hidden` 条目。
 
 响应类型：`MovieCatalog`。
+
+### 3.3.1 `GET /api/admin/media/{xlys_id}`
+
+读取单部影片的数据库详情，不访问上游。响应包含 `MovieItem` 的全部字段，另有 `source_url`、`declared_episode_count`、`season_number`、`last_checked_at`、`last_watched_at` 和 `episodes`。电视剧的 `episodes` 按来源序号排序，每项含 `source_index`、`label` 和 `play_page_url`；电影返回空数组。影片不存在返回 `404`。
 
 ### 3.4 `PATCH /api/admin/media/{xlys_id}/policy`
 
@@ -412,7 +421,14 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 | `message` | string | 导入结果说明 |
 | `catalog` | `MovieCatalog`/null | 更新后的媒体目录 |
 
-### 3.9 播放线路管理
+### 3.9 手动刷新影片与最近观看的电视剧
+
+`POST /api/admin/media/{xlys_id}/refresh` 从该影片已保存的来源详情页重新读取信息。电视剧分集按当前详情页增删和更新；片库策略与 WebDAV 名称保持原值。影片不存在返回 `404`，没有详情页地址或详情页与原影片不匹配返回 `409`。响应包含 `item`（影片 ID、标题、类型、新增集数、当前集数）和更新后的 `catalog`。
+
+`POST /api/admin/media/refresh-recent-series` 一次刷新近 30 天通过 `GET /play` 成功播放过的全部已入库电视剧。它逐部处理，单部失败不会阻断其他影片。响应包含 `checked`、`refreshed`、`added_episodes`、`failures`（每部的 ID、标题、错误原因）和更新后的 `catalog`。没有符合条件的电视剧时返回零计数。
+近 30 天观看过的电视剧在完整发现同步时会保留在自动片库中，即使不在当次发现集合里。
+
+### 3.10 播放线路管理
 
 这组接口供管理页实时查看并人工固定某个视频的 HLS 线路。人工选择写入既有的 SQLite 播放决策缓存；之后 `source=auto` 命中该记录时只使用该线路，不再先尝试 TOS、member 或其他 HLS。线路按名称而不是当前位置保存，所以上游调整候选顺序时仍能找到例如 `iplay` 的线路。若名称消失或变得不唯一，缓存会失效并恢复正常探索。
 

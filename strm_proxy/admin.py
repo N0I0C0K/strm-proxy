@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import date
+import asyncio
+from datetime import date, datetime
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -19,7 +21,8 @@ from .dependencies import (
 )
 from .detail import fetch_xlys_detail
 from .library import MediaLibrary
-from .models import ResolvedPage
+from .logging_utils import describe_http_error
+from .models import ResolvedPage, ResolverError
 from .playback_selection import PlaybackCoordinator
 
 
@@ -37,6 +40,22 @@ class MovieItem(BaseModel):
     dav_filename: str
     play_page_url: str
     kind: Literal["movie", "series"]
+    available_episode_count: int
+
+
+class EpisodeItem(BaseModel):
+    source_index: int
+    label: str
+    play_page_url: str
+
+
+class MediaDetail(MovieItem):
+    source_url: str | None
+    declared_episode_count: int | None
+    season_number: int | None
+    last_checked_at: datetime | None
+    last_watched_at: datetime | None
+    episodes: list[EpisodeItem]
 
 
 class MovieCounts(BaseModel):
@@ -52,6 +71,34 @@ class MovieCatalog(BaseModel):
     movies: list[MovieItem]
     counts: MovieCounts
     recent_limit: int
+    recently_watched_series_count: int
+
+
+class RefreshItem(BaseModel):
+    xlys_id: int
+    title: str
+    kind: Literal["movie", "series"]
+    added_episodes: int
+    available_episode_count: int
+
+
+class RefreshResult(BaseModel):
+    item: RefreshItem
+    catalog: MovieCatalog
+
+
+class RefreshFailure(BaseModel):
+    xlys_id: int
+    title: str
+    error: str
+
+
+class RecentRefreshResult(BaseModel):
+    checked: int
+    refreshed: int
+    added_episodes: int
+    failures: list[RefreshFailure]
+    catalog: MovieCatalog
 
 
 class PolicyUpdate(BaseModel):
@@ -123,6 +170,36 @@ async def list_movies(
     return _catalog(repository.list_media(), library)
 
 
+@router.get("/media/{xlys_id}", response_model=MediaDetail)
+async def get_media_detail(
+    xlys_id: int,
+    _auth: AdminAuthDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+) -> MediaDetail:
+    media = _require_media(repository, xlys_id)
+    episodes = (
+        repository.list_episodes(xlys_id)
+        if media.media_type == MediaType.SERIES.value else ()
+    )
+    return MediaDetail(
+        **_movie_item(media, library, len(episodes)).model_dump(),
+        source_url=media.source_url,
+        declared_episode_count=media.declared_episode_count,
+        season_number=media.season_number,
+        last_checked_at=media.last_checked_at,
+        last_watched_at=media.last_watched_at,
+        episodes=[
+            EpisodeItem(
+                source_index=episode.source_index,
+                label=episode.label,
+                play_page_url=library.episode_play_url(media, episode),
+            )
+            for episode in episodes
+        ],
+    )
+
+
 @router.patch("/movies/batch/policy", response_model=MovieCatalog, include_in_schema=False)
 @router.patch("/media/batch/policy", response_model=MovieCatalog)
 async def update_movie_policies(
@@ -161,7 +238,11 @@ async def update_movie_policy(
     movie = repository.get_media(xlys_id)
     if movie is None:
         raise HTTPException(status_code=404, detail="Media not found")
-    return _movie_item(movie, library)
+    return _movie_item(
+        movie,
+        library,
+        len(repository.list_episodes(xlys_id)) if movie.media_type == MediaType.SERIES.value else 0,
+    )
 
 
 @router.post("/sync", response_model=MovieCatalog)
@@ -172,6 +253,55 @@ async def sync_movies(
 ) -> MovieCatalog:
     await library.sync_from_source()
     return _catalog(repository.list_media(), library)
+
+
+@router.post("/media/refresh-recent-series", response_model=RecentRefreshResult)
+async def refresh_recent_series(
+    _auth: AdminAuthDep,
+    http: HttpClientDep,
+    settings: SettingsDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+) -> RecentRefreshResult:
+    targets = repository.recently_watched_series()
+    semaphore = asyncio.Semaphore(3)
+
+    async def refresh(media: MediaItem) -> RefreshItem | RefreshFailure:
+        async with semaphore:
+            try:
+                return await _refresh_media(
+                    media, http, settings.allowed_page_hosts, repository
+                )
+            except (HTTPException, httpx.HTTPError, ResolverError, ValueError) as exc:
+                return RefreshFailure(
+                    xlys_id=media.xlys_id,
+                    title=media.title,
+                    error=_refresh_error(exc),
+                )
+
+    results = await asyncio.gather(*(refresh(media) for media in targets))
+    refreshed = [item for item in results if isinstance(item, RefreshItem)]
+    return RecentRefreshResult(
+        checked=len(targets),
+        refreshed=len(refreshed),
+        added_episodes=sum(item.added_episodes for item in refreshed),
+        failures=[item for item in results if isinstance(item, RefreshFailure)],
+        catalog=_catalog(repository.list_media(), library),
+    )
+
+
+@router.post("/media/{xlys_id}/refresh", response_model=RefreshResult)
+async def refresh_media(
+    xlys_id: int,
+    _auth: AdminAuthDep,
+    http: HttpClientDep,
+    settings: SettingsDep,
+    repository: MediaRepositoryDep,
+    library: MediaLibraryDep,
+) -> RefreshResult:
+    media = _require_media(repository, xlys_id)
+    item = await _refresh_media(media, http, settings.allowed_page_hosts, repository)
+    return RefreshResult(item=item, catalog=_catalog(repository.list_media(), library))
 
 
 @router.get(
@@ -330,6 +460,7 @@ async def import_from_url(
 
 
 def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatalog:
+    episode_counts = library.repository.episode_counts()
     counts = MovieCounts(
         total=len(movies),
         automatic=sum(movie.policy == MoviePolicy.AUTO.value for movie in movies),
@@ -339,10 +470,45 @@ def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatal
         series=sum(movie.media_type == MediaType.SERIES.value for movie in movies),
     )
     return MovieCatalog(
-        movies=[_movie_item(movie, library) for movie in movies],
+        movies=[_movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies],
         counts=counts,
         recent_limit=library.recent_limit,
+        recently_watched_series_count=len(library.repository.recently_watched_series()),
     )
+
+
+async def _refresh_media(
+    media: MediaItem,
+    http: httpx.AsyncClient,
+    allowed_hosts: tuple[str, ...],
+    repository: MediaRepository,
+) -> RefreshItem:
+    if not media.source_url:
+        raise HTTPException(status_code=409, detail="该影片没有详情页地址，无法刷新")
+    detail = await fetch_xlys_detail(
+        http, media.source_url, allowed_hosts=allowed_hosts
+    )
+    if detail.xlys_id != media.xlys_id or detail.kind != media.media_type:
+        raise HTTPException(status_code=409, detail="详情页与现有影片不匹配")
+    added = repository.refresh_media_from_detail(detail)
+    return RefreshItem(
+        xlys_id=media.xlys_id,
+        title=detail.title,
+        kind=detail.kind,
+        added_episodes=added,
+        available_episode_count=(
+            len(repository.list_episodes(media.xlys_id))
+            if detail.kind == MediaType.SERIES.value else 0
+        ),
+    )
+
+
+def _refresh_error(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    if isinstance(exc, httpx.HTTPError):
+        return describe_http_error(exc)
+    return str(exc)
 
 
 def _require_media(repository: MediaRepository, xlys_id: int) -> MediaItem:
@@ -401,7 +567,11 @@ def _playback_routes(
     )
 
 
-def _movie_item(movie: MediaItem, library: MediaLibrary) -> MovieItem:
+def _movie_item(
+    movie: MediaItem,
+    library: MediaLibrary,
+    available_episode_count: int,
+) -> MovieItem:
     return MovieItem(
         xlys_id=movie.xlys_id,
         title=movie.title,
@@ -413,4 +583,5 @@ def _movie_item(movie: MediaItem, library: MediaLibrary) -> MovieItem:
         dav_filename=movie.dav_name,
         play_page_url=library.movie_play_url(movie),
         kind=movie.media_type,
+        available_episode_count=available_episode_count,
     )

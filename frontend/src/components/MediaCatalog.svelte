@@ -1,15 +1,19 @@
 <script lang="ts">
   import { Button, Checkbox, Select, Toolbar } from 'bits-ui'
-  import { Check, ChevronDown, EyeOff, LoaderCircle, Search, Star, Trash2, Waypoints } from 'lucide-svelte'
+  import { Check, ChevronDown, EyeOff, LoaderCircle, RefreshCw, Search, Star, Trash2, Waypoints } from 'lucide-svelte'
   import { policyOptions, type LayoutMode, type Media, type Policy } from '../lib/types'
 
   export let media: Media[]
   export let layoutMode: LayoutMode
   export let selected: Set<number>
   export let updating: Set<number>
+  export let refreshing: Set<number>
+  export let refreshDisabled = false
   export let bulkBusy = false
   export let onSelectionChange: (selection: Set<number>) => void
   export let onUpdatePolicy: (media: Media, policy: Policy) => void
+  export let onRefresh: (media: Media) => void
+  export let onOpenDetail: (media: Media) => void
   export let onConfigureRoute: (media: Media) => void
   export let onBulkPolicy: (policy: Policy) => void
   export let onDelete: () => void
@@ -98,7 +102,7 @@
 
 {#if layoutMode === 'list'}
   <div class="table-head">
-    <Checkbox.Root class="check-control" checked={allResultsSelected} indeterminate={selectedResultCount > 0 && !allResultsSelected} onCheckedChange={toggleAllResults} aria-label="选择当前全部结果" title="选择当前结果">
+    <Checkbox.Root class="check-control" checked={allResultsSelected} indeterminate={selectedResultCount > 0 && !allResultsSelected} onCheckedChange={toggleAllResults} aria-label="选择当前页全部结果" title="选择当前页结果">
       {#snippet children({ checked, indeterminate })}{#if checked}<Check size={12} />{:else if indeterminate}<span class="minus">−</span>{/if}{/snippet}
     </Checkbox.Root>
     <span>影片</span><span>更新时间</span><span>片库策略</span>
@@ -112,17 +116,19 @@
         <Checkbox.Root class="check-control row-check" checked={selected.has(item.xlys_id)} onCheckedChange={(checked) => setSelected(item.xlys_id, checked)} onpointerdown={(event) => startDragSelection(event, item.xlys_id)} onclick={(event) => suppressPointerClick(event, item.xlys_id)} aria-label={`选择《${item.title}》`} title="按住并拖动可连续选择" data-select-id={item.xlys_id}>
           {#snippet children({ checked })}{#if checked}<Check size={12} />{/if}{/snippet}
         </Checkbox.Root>
-        <a class="poster" href={item.play_page_url} target="_blank" rel="noreferrer" aria-label={`打开《${item.title}》播放页`}>
+        <button class="poster" type="button" onclick={() => onOpenDetail(item)} aria-label={`查看《${item.title}》详情`}>
           <span>{item.title.slice(0, 1)}</span>
           {#if item.cover_url}<img src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={imageFailed} />{/if}
-        </a>
+        </button>
         <div class="movie-copy">
           <div class="movie-title-line">
-            <h3>{item.title}</h3>
+            <h3><button class="movie-title-button" type="button" onclick={() => onOpenDetail(item)}>{item.title}</button></h3>
+            <button class="route-button" type="button" onclick={() => onRefresh(item)} disabled={refreshDisabled || refreshing.has(item.xlys_id)} title="从来源刷新影片信息和分集" aria-label={`刷新《${item.title}》`}><RefreshCw class={refreshing.has(item.xlys_id) ? 'spin' : undefined} size={13} /></button>
             <button class="route-button" type="button" onclick={() => onConfigureRoute(item)} title="选择播放线路" aria-label={`选择《${item.title}》的播放线路`}><Waypoints size={13} /></button>
           </div>
           <div class="media-tags">
             <span class:series-kind={item.kind === 'series'} class="media-kind">{item.kind === 'series' ? '电视剧' : '电影'}</span>
+            {#if item.kind === 'series'}<span class="episode-chip" title={`当前已收录 ${item.available_episode_count} 集`}>{item.available_episode_count} 集</span>{/if}
             {#if item.year}<span>{item.year}</span>{/if}
             {#if item.douban_rating !== null}<span class="rating-chip"><Star size={10} fill="currentColor" />{item.douban_rating.toFixed(1)}</span>{/if}
           </div>
