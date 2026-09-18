@@ -5,6 +5,13 @@ export function basicCredentials(user: string, password: string): string {
   return `Basic ${btoa(binary)}`
 }
 
+export class AdminApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message)
+    this.name = 'AdminApiError'
+  }
+}
+
 export async function adminApi<T>(
   credentials: string,
   path: string,
@@ -26,7 +33,7 @@ export async function adminApi<T>(
     } catch {
       // Keep the status-based message for non-JSON failures.
     }
-    throw new Error(message)
+    throw new AdminApiError(message, response.status)
   }
   return response.json() as Promise<T>
 }

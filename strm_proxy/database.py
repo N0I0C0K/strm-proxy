@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
+import hashlib
 import re
+import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -123,6 +125,21 @@ class CacheEntry(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class AccessCredential(Base):
+    __tablename__ = "access_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    salt: Mapped[str] = mapped_column(String(32), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000
+    ).hex()
+
+
 class CacheRepository:
     """Minimal persistent key/value cache backed by the application database."""
 
@@ -178,6 +195,45 @@ class MediaRepository:
         _upgrade_media_schema(self.engine)
         Base.metadata.create_all(self.engine)
         _migrate_legacy_movies(self.engine)
+
+    def initialize_credentials(self, username: str, password: str) -> None:
+        """Use configured credentials only on the first start of this database."""
+        with self._sessions.begin() as session:
+            if session.get(AccessCredential, 1) is None:
+                salt = secrets.token_hex(16)
+                session.add(AccessCredential(
+                    id=1, username=username, salt=salt,
+                    password_hash=_hash_password(password, salt),
+                ))
+
+    def credentials_username(self) -> str:
+        with self._sessions() as session:
+            credential = session.get(AccessCredential, 1)
+            if credential is None:
+                raise RuntimeError("Access credentials have not been initialized")
+            return credential.username
+
+    def verify_credentials(self, username: str, password: str) -> bool:
+        with self._sessions() as session:
+            credential = session.get(AccessCredential, 1)
+            if credential is None:
+                return False
+            return secrets.compare_digest(username, credential.username) and secrets.compare_digest(
+                _hash_password(password, credential.salt), credential.password_hash
+            )
+
+    def change_credentials(self, current_password: str, username: str, password: str) -> bool:
+        with self._sessions.begin() as session:
+            credential = session.get(AccessCredential, 1)
+            if credential is None or not secrets.compare_digest(
+                _hash_password(current_password, credential.salt), credential.password_hash
+            ):
+                return False
+            salt = secrets.token_hex(16)
+            credential.username = username
+            credential.salt = salt
+            credential.password_hash = _hash_password(password, salt)
+            return True
 
     def clear_all_media(self) -> None:
         """Remove the disposable catalog while preserving the schema."""

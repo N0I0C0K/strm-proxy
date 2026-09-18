@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
+  import AccountDialog from '../components/AccountDialog.svelte'
   import AppHeader from '../components/AppHeader.svelte'
   import CatalogMetrics from '../components/CatalogMetrics.svelte'
   import CatalogPagination from '../components/CatalogPagination.svelte'
@@ -8,6 +10,7 @@
   import MediaCatalog from '../components/MediaCatalog.svelte'
   import MediaDetailDialog from '../components/MediaDetailDialog.svelte'
   import PlaybackRouteDialog from '../components/PlaybackRouteDialog.svelte'
+  import WebDavConnect from '../components/WebDavConnect.svelte'
   import { adminApi } from '../lib/admin-api'
   import { filterAndSortMedia, recount } from '../lib/catalog'
   import type { Catalog, LayoutMode, ManualImportResult, Media, MediaDetail, MediaTypeFilter, PlaybackRoutes, Policy, RefreshResult, RecentRefreshResult } from '../lib/types'
@@ -15,6 +18,7 @@
   export let credentials: string
   export let initialCatalog: Catalog
   export let onLogout: () => void
+  export let onCredentialsChanged: (username: string, password: string) => void
 
   let catalog = initialCatalog
   let pageError = ''
@@ -27,6 +31,8 @@
   let bulkBusy = false
   let deleteConfirm = false
   let manualOpen = false
+  let accountOpen = false
+  let webDavOpen = false
   let routeOpen = false
   let routeMedia: Media | null = null
   let routeData: PlaybackRoutes | null = null
@@ -37,7 +43,9 @@
   let mediaTypeFilter: MediaTypeFilter = 'all'
   let sortOrder = 'updated-desc'
   let layoutMode: LayoutMode = 'list'
-  const pageSize = 24
+  let catalogPanel: HTMLElement
+  let gridColumns = 4
+  $: pageSize = layoutMode === 'list' ? 24 : gridColumns * 4
   let page = 1
   let lastFilterSignature = ''
   let detailOpen = false
@@ -50,7 +58,7 @@
 
   $: sortedMedia = filterAndSortMedia(catalog.movies, query, policyFilter, mediaTypeFilter, sortOrder)
   $: {
-    const signature = JSON.stringify([query, policyFilter, mediaTypeFilter, sortOrder, layoutMode])
+    const signature = JSON.stringify([query, policyFilter, mediaTypeFilter, sortOrder, layoutMode, pageSize])
     if (signature !== lastFilterSignature) {
       page = 1
       lastFilterSignature = signature
@@ -60,6 +68,22 @@
   $: if (page > pageCount) page = pageCount
   $: visibleMedia = sortedMedia.slice((page - 1) * pageSize, page * pageSize)
   $: activeDetailMedia = catalog.movies.find((item) => item.xlys_id === detailMediaId) ?? null
+
+  onMount(() => {
+    const measure = () => {
+      gridColumns = window.innerWidth <= 560
+        ? 2
+        : Math.max(1, Math.floor((catalogPanel.clientWidth - 36 + 12) / (142 + 12)))
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(catalogPanel)
+    window.addEventListener('resize', measure)
+    measure()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  })
 
   function changePage(next: number) {
     page = Math.max(1, Math.min(next, pageCount))
@@ -318,10 +342,10 @@
 </script>
 
 <div class="app-shell">
-  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} {onLogout} />
+  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
   <main class="workspace">
     <CatalogMetrics {catalog} bind:policyFilter />
-    <section class="catalog-panel">
+    <section class="catalog-panel" bind:this={catalogPanel}>
       <CatalogToolbar bind:layoutMode bind:mediaTypeFilter bind:sortOrder bind:query resultCount={sortedMedia.length} />
       {#if pageError}<div class="page-error" role="alert">{pageError}</div>{/if}
       {#if pageNotice}<div class="page-notice" role="status">{pageNotice}</div>{/if}
@@ -331,6 +355,8 @@
   </main>
   <DeleteConfirmDialog bind:open={deleteConfirm} count={selected.size} busy={bulkBusy} onDelete={deleteSelected} />
   <ImportDialog bind:open={manualOpen} onImport={importUrl} onCatalogImported={applyImportedCatalog} />
+  <AccountDialog bind:open={accountOpen} {credentials} {onCredentialsChanged} />
+  <WebDavConnect bind:open={webDavOpen} {credentials} />
   <PlaybackRouteDialog bind:open={routeOpen} media={routeMedia} routes={routeData} busy={routeBusy} error={routeError} onSelect={selectPlaybackRoute} onRestoreAuto={restoreAutomaticRoute} />
   <MediaDetailDialog bind:open={detailOpen} media={activeDetailMedia} detail={detailData} loading={detailLoading} busy={detailActionBusy || syncing || recentRefreshing || refreshing.size > 0} error={detailError} notice={detailNotice} onRefresh={refreshDetail} onPolicyChange={updateDetailPolicy} onConfigureRoute={configureDetailRoute} />
 </div>

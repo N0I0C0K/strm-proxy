@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import sqlite3
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
 from strm_proxy.catalog import CatalogEntry
-from strm_proxy.config import AppSettings
+from strm_proxy.config import AppSettings, DavSettings
 from strm_proxy.database import MoviePolicy
 from strm_proxy.dependencies import (
     get_app_services,
@@ -23,6 +24,48 @@ from strm_proxy.models import ResolvedPage, StreamCandidate
 def _auth() -> dict[str, str]:
     token = base64.b64encode(b"demo:demo").decode()
     return {"Authorization": f"Basic {token}"}
+
+
+def _credentials(username: str, password: str) -> dict[str, str]:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def test_credentials_change_updates_admin_and_webdav_and_survives_restart(tmp_path) -> None:
+    database_path = tmp_path / "credentials.db"
+    application = create_app(AppSettings(database_path=str(database_path)))
+    with TestClient(application) as client:
+        assert client.get("/api/admin/credentials", headers=_auth()).json() == {"username": "demo"}
+        rejected = client.put(
+            "/api/admin/credentials", headers=_auth(),
+            json={"username": "media", "current_password": "wrong", "password": "new-secret-123"},
+        )
+        assert rejected.status_code == 403
+        response = client.put(
+            "/api/admin/credentials", headers=_auth(),
+            json={"username": "media", "current_password": "demo", "password": "new-secret-123"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"username": "media"}
+        assert client.get("/api/admin/credentials", headers=_auth()).status_code == 401
+        assert client.get("/api/admin/credentials", headers=_credentials("media", "new-secret-123")).status_code == 200
+        assert client.get("/dav/", headers=_auth()).status_code == 401
+        assert client.get("/dav/", headers=_credentials("media", "new-secret-123")).status_code == 200
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute("SELECT username, salt, password_hash FROM access_credentials").fetchone()
+    assert row is not None
+    assert row[0] == "media"
+    assert len(row[1]) == 32
+    assert len(row[2]) == 64
+    assert "new-secret-123" not in str(row)
+
+    restarted = create_app(AppSettings(
+        database_path=str(database_path), dav=DavSettings(username="bootstrap", password="ignored")
+    ))
+    with TestClient(restarted) as client:
+        assert client.get("/api/admin/credentials", headers=_credentials("media", "new-secret-123")).status_code == 200
+        assert client.get("/api/admin/credentials", headers=_credentials("bootstrap", "ignored")).status_code == 401
 
 
 def _movie() -> CatalogEntry:

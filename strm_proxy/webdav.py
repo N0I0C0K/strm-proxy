@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-import secrets
 from datetime import date, datetime, time, timezone
 from email.utils import format_datetime, formatdate
 from urllib.parse import quote
@@ -13,8 +12,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from .config import DavSettings
-from .database import Episode, MediaItem
-from .dependencies import DavSettingsDep, MediaLibraryDep
+from .database import Episode, MediaItem, MediaRepository
+from .dependencies import DavSettingsDep, MediaLibraryDep, MediaRepositoryDep
 from .library import MediaLibrary
 from .logging_utils import safe_url_for_log
 from .routes import build_play_url
@@ -34,7 +33,7 @@ DAV_LAST_MODIFIED = formatdate(usegmt=True)
 
 @router.api_route("/dav", methods=DAV_METHODS)
 @router.api_route("/dav/", methods=DAV_METHODS)
-async def webdav_root(request: Request, settings: DavSettingsDep) -> Response:
+async def webdav_root(request: Request, settings: DavSettingsDep, repository: MediaRepositoryDep) -> Response:
     logger.debug(
         "event=webdav_request method=%s path=/dav/ depth=%s",
         request.method,
@@ -42,7 +41,7 @@ async def webdav_root(request: Request, settings: DavSettingsDep) -> Response:
     )
     if request.method == "OPTIONS":
         return _options()
-    _authenticate(request, settings)
+    _authenticate(request, repository)
     if request.method == "PROPFIND":
         return _propfind_root(
             settings,
@@ -63,12 +62,13 @@ async def webdav_root(request: Request, settings: DavSettingsDep) -> Response:
 async def webdav_file(
     request: Request,
     settings: DavSettingsDep,
+    repository: MediaRepositoryDep,
     library: MediaLibraryDep,
     file_path: str,
 ) -> Response:
     if request.method == "OPTIONS":
         return _options()
-    _authenticate(request, settings)
+    _authenticate(request, repository)
     if file_path == settings.filename:
         if request.method == "PROPFIND":
             return _propfind_legacy_file(request, settings)
@@ -224,7 +224,7 @@ def _strm_response(request: Request, page_url: str) -> Response:
     )
 
 
-def _authenticate(request: Request, settings: DavSettings) -> None:
+def _authenticate(request: Request, repository: MediaRepository) -> None:
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("basic "):
         try:
@@ -232,9 +232,7 @@ def _authenticate(request: Request, settings: DavSettings) -> None:
             username, password = decoded.split(":", 1)
         except (ValueError, UnicodeDecodeError):
             username, password = "", ""
-        if secrets.compare_digest(
-            username, settings.username
-        ) and secrets.compare_digest(password, settings.password):
+        if repository.verify_credentials(username, password):
             return
     raise HTTPException(
         status_code=401,

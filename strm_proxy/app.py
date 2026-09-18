@@ -85,6 +85,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         logger.info("event=app_start")
         repository = create_media_repository(settings.database_path)
+        repository.initialize_credentials(settings.dav.username, settings.dav.password)
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(
@@ -219,6 +220,10 @@ app = create_app(default_settings)
 
 
 def run() -> None:
+    display_host = "127.0.0.1" if default_settings.host in {"0.0.0.0", "::"} else default_settings.host
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    print(f"Admin page: http://{display_host}:{default_settings.port}/admin/", flush=True)
     uvicorn.run(
         app,
         host=default_settings.host,

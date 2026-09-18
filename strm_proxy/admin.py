@@ -159,6 +159,34 @@ class PlaybackRouteClearResult(BaseModel):
     page_url: str
 
 
+class CredentialsView(BaseModel):
+    username: str
+
+
+class CredentialsUpdate(BaseModel):
+    current_password: str
+    username: str = Field(min_length=1, max_length=255, pattern=r"^[^:\s]+$")
+    password: str = Field(min_length=8, max_length=1024)
+
+
+@router.get("/credentials", response_model=CredentialsView)
+def get_credentials(_auth: AdminAuthDep, repository: MediaRepositoryDep) -> CredentialsView:
+    return CredentialsView(username=repository.credentials_username())
+
+
+@router.put("/credentials", response_model=CredentialsView)
+def update_credentials(
+    update: CredentialsUpdate,
+    _auth: AdminAuthDep,
+    repository: MediaRepositoryDep,
+) -> CredentialsView:
+    if not repository.change_credentials(
+        update.current_password, update.username, update.password
+    ):
+        raise HTTPException(status_code=403, detail="当前密码不正确")
+    return CredentialsView(username=update.username)
+
+
 @router.get("/movies", response_model=MovieCatalog, include_in_schema=False)
 @router.get("/media", response_model=MovieCatalog)
 async def list_movies(

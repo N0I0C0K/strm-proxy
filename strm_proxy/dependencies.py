@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import secrets
 from typing import Annotated, cast
 
 import httpx
@@ -120,16 +119,15 @@ _admin_basic_auth = HTTPBasic(auto_error=False)
 
 
 def require_admin_auth(
-    settings: DavSettingsDep,
+    repository: MediaRepositoryDep,
     credentials: Annotated[
         HTTPBasicCredentials | None,
         Depends(_admin_basic_auth),
     ],
 ) -> None:
-    if credentials is not None and secrets.compare_digest(
-        credentials.username,
-        settings.username,
-    ) and secrets.compare_digest(credentials.password, settings.password):
+    if credentials is not None and repository.verify_credentials(
+        credentials.username, credentials.password
+    ):
         return
     raise HTTPException(
         status_code=401,

@@ -40,7 +40,7 @@ http://127.0.0.1:8787
 
 `STRM_PROXY_UPSTREAM_PROXY` 设置后，所有服务端上游 HTTP 请求统一经过该 HTTP(S) 代理，包括 xlys 页面和接口、HLS manifest、前台分片及后台预读。该配置适用于浏览器走代理但服务进程直连 CDN 吞吐很差的环境；启动日志仅输出 `upstream_proxy=true|false`，不会记录代理地址或其中的认证信息。
 
-默认监听 `0.0.0.0`，允许局域网设备访问。建议修改默认账号密码。HTTP Basic 凭据应通过 HTTPS 或可信私有网络传输。当前播放 API 没有鉴权，不应直接无保护地暴露到公网。
+默认监听 `0.0.0.0`，允许局域网设备访问。WebDAV 账号密码在首次建库时由环境变量初始化，此后保存在数据库中，可在管理页修改；环境变量的后续变化不会覆盖数据库凭据。建议修改默认账号密码。HTTP Basic 凭据应通过 HTTPS 或可信私有网络传输。当前播放 API 没有鉴权，不应直接无保护地暴露到公网。
 
 ## 2. 播放 API
 
@@ -480,6 +480,20 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
   "page_url": "https://www.xlys02.com/play/27063-0.htm"
 }
 ```
+
+### 3.11 管理账号
+
+`GET /api/admin/credentials` 返回当前用户名，不返回密码。`PUT /api/admin/credentials` 使用当前账号的 Basic Auth，并提交旧密码、新用户名和新密码：
+
+```json
+{
+  "current_password": "old-password",
+  "username": "media",
+  "password": "new-password"
+}
+```
+
+新密码至少 8 个字符；旧密码错误返回 `403`。更新后，管理 API 与 WebDAV 立即使用新凭据。密码以随机盐和 PBKDF2-SHA256 摘要保存在 SQLite 中。
 
 ## 4. WebDAV 接口
 

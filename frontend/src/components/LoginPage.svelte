@@ -6,8 +6,8 @@
   export let error = ''
   export let onLogin: (username: string, password: string) => void
 
-  let username = 'demo'
-  let password = 'demo'
+  let username = ''
+  let password = ''
 </script>
 
 <main class="login-shell">
@@ -34,7 +34,7 @@
         {#if loading}<LoaderCircle class="spin" size={18} />{/if}
         {loading ? '正在连接…' : '进入控制台'}
       </Button.Root>
-      <p class="secure-note"><ShieldCheck size={15} /> 凭据仅保留在当前页面内存中</p>
+      <p class="secure-note"><ShieldCheck size={15} /> 登录在当前浏览器标签页内保持，退出后清除</p>
     </form>
   </section>
 </main>
