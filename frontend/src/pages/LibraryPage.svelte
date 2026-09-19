@@ -325,6 +325,7 @@
           manual_override: false,
           selected_line: null,
           selected_route_name: null,
+          selected_route_key: null,
         }
       }
     } catch (error) {
@@ -342,7 +343,7 @@
 </script>
 
 <div class="app-shell">
-  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
+  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} recentSeries={catalog.recently_watched_series} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
   <main class="workspace">
     <CatalogMetrics {catalog} bind:policyFilter />
     <section class="catalog-panel" bind:this={catalogPanel}>

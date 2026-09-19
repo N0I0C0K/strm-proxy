@@ -12,6 +12,7 @@ from strm_proxy.xlys import (
     create_signature,
     direct_media_url_candidates,
     extract_candidates,
+    extract_direct_candidates,
     parse_page,
     validate_page_url,
 )
@@ -55,6 +56,35 @@ def test_extract_candidates_prefers_m3u8_fields_and_deduplicates() -> None:
     ]
     assert candidates[0].route_name == "iplay"
     assert candidates[1].route_name is None
+
+
+def test_extract_candidates_includes_additional_numbered_hls_fields() -> None:
+    candidates = extract_candidates(
+        {
+            "m3u8": "https://cdn.example/one.m3u8#one",
+            "url4": "https://cdn.example/four.m3u8#four",
+            "m3u8_3": "https://cdn.example/three.m3u8#three",
+            "url5": "https://cdn.example/video.mp4",
+            "other": "https://cdn.example/unrelated.m3u8#other",
+        },
+        "https://www.xlys02.com",
+    )
+    assert [(item.kind, item.route_name) for item in candidates] == [
+        ("m3u8", "one"),
+        ("url4", "four"),
+        ("m3u8_3", "three"),
+    ]
+
+
+def test_extract_direct_candidates_keeps_signed_url3_slots() -> None:
+    candidates = extract_direct_candidates(
+        {"url3": "https://cdn.example/video?x=1,https://other.example/video?x=2"},
+        "https://www.xlys02.com",
+    )
+    assert [candidate.url for candidate in candidates] == [
+        "https://cdn.example/video?x=1",
+        "https://other.example/video?x=2",
+    ]
 
 
 def test_direct_media_candidates_rewrite_tos_objects_to_playable_cdn() -> None:

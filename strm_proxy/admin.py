@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from datetime import date, datetime
 from typing import Literal
 
@@ -23,7 +24,7 @@ from .detail import fetch_xlys_detail
 from .library import MediaLibrary
 from .logging_utils import describe_http_error
 from .models import ResolvedPage, ResolverError
-from .playback_selection import PlaybackCoordinator
+from .playback_selection import PlaybackCoordinator, PlaybackSelection
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -72,6 +73,7 @@ class MovieCatalog(BaseModel):
     counts: MovieCounts
     recent_limit: int
     recently_watched_series_count: int
+    recently_watched_series: list[str]
 
 
 class RefreshItem(BaseModel):
@@ -133,6 +135,7 @@ class ManualImportResult(BaseModel):
 
 class PlaybackRouteOption(BaseModel):
     line: int
+    key: str
     name: str | None
     kind: str
     selectable: bool
@@ -143,10 +146,11 @@ class PlaybackRoutes(BaseModel):
     title: str | None
     media_kind: Literal["movie", "series"]
     cache_enabled: bool
-    cached_source: Literal["hls", "tos", "member"] | None
+    cached_source: Literal["hls", "tos", "member", "url3"] | None
     manual_override: bool
     selected_line: int | None
     selected_route_name: str | None
+    selected_route_key: str | None
     routes: list[PlaybackRouteOption]
 
 
@@ -371,28 +375,54 @@ async def set_playback_route(
     media = _require_media(repository, xlys_id)
     page_url = _media_play_page_url(media, repository, library)
     resolved = await resolver.resolve_page(page_url)
-    wanted = update.route_name.casefold()
-    matches = [
-        index
-        for index, candidate in enumerate(resolved.candidates)
-        if candidate.route_name is not None
-        and candidate.route_name.casefold() == wanted
-    ]
-    if not matches:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Playback route {update.route_name!r} is not available",
+    key = update.route_name
+    direct_line: int | None = None
+    if key == "source:tos":
+        if not resolved.tos_available:
+            raise HTTPException(status_code=404, detail="TOS route is not available")
+    elif key.startswith("url3:"):
+        try:
+            direct_line = int(key[5:])
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Direct route is not available") from None
+        if direct_line < 0 or direct_line >= len(resolved.direct_candidates):
+            raise HTTPException(status_code=404, detail="Direct route is not available")
+        key = f"url3:{direct_line}"
+    else:
+        wanted = key.casefold()
+        matches = [
+            index
+            for index, candidate in enumerate(resolved.candidates)
+            if candidate.route_name is not None
+            and candidate.route_name.casefold() == wanted
+        ]
+        if not matches:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Playback route {key!r} is not available",
+            )
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Playback route {key!r} is ambiguous",
+            )
+        key = resolved.candidates[matches[0]].route_name
+    if media.media_type == MediaType.SERIES.value:
+        playback.cache.remember_series_route(
+            media.xlys_id,
+            key,
+            _episode_play_page_urls(media, repository, library),
         )
-    if len(matches) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Playback route {update.route_name!r} is ambiguous",
+    elif key == "source:tos":
+        playback.cache.remember_manual_direct(resolved, "tos")
+    elif direct_line is not None:
+        playback.cache.remember_manual_direct(resolved, "url3", direct_line)
+    else:
+        playback.cache.remember_hls(
+            resolved,
+            matches[0],
+            manual_override=True,
         )
-    playback.cache.remember_hls(
-        resolved,
-        matches[0],
-        manual_override=True,
-    )
     return _playback_routes(media, resolved, playback)
 
 
@@ -414,7 +444,12 @@ async def clear_playback_route(
         )
     media = _require_media(repository, xlys_id)
     page_url = _media_play_page_url(media, repository, library)
-    playback.cache.clear(page_url)
+    if media.media_type == MediaType.SERIES.value:
+        playback.cache.clear_series_route(
+            media.xlys_id, _episode_play_page_urls(media, repository, library)
+        )
+    else:
+        playback.cache.clear(page_url)
     return PlaybackRouteClearResult(page_url=page_url)
 
 
@@ -489,6 +524,7 @@ async def import_from_url(
 
 def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatalog:
     episode_counts = library.repository.episode_counts()
+    recently_watched_series = library.repository.recently_watched_series()
     counts = MovieCounts(
         total=len(movies),
         automatic=sum(movie.policy == MoviePolicy.AUTO.value for movie in movies),
@@ -501,7 +537,8 @@ def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatal
         movies=[_movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies],
         counts=counts,
         recent_limit=library.recent_limit,
-        recently_watched_series_count=len(library.repository.recently_watched_series()),
+        recently_watched_series_count=len(recently_watched_series),
+        recently_watched_series=[series.title for series in recently_watched_series],
     )
 
 
@@ -558,6 +595,17 @@ def _media_play_page_url(
     return library.movie_play_url(media)
 
 
+def _episode_play_page_urls(
+    media: MediaItem,
+    repository: MediaRepository,
+    library: MediaLibrary,
+) -> tuple[str, ...]:
+    return tuple(
+        library.episode_play_url(media, episode)
+        for episode in repository.list_episodes(media.xlys_id)
+    )
+
+
 def _playback_routes(
     media: MediaItem,
     resolved: ResolvedPage,
@@ -578,21 +626,71 @@ def _playback_routes(
             if selection is not None and selection.source == "hls"
             else None
         ),
-        selected_route_name=(
-            selection.route_name
-            if selection is not None and selection.source == "hls"
-            else None
-        ),
-        routes=[
-            PlaybackRouteOption(
-                line=index,
-                name=candidate.route_name,
-                kind=candidate.kind,
-                selectable=candidate.route_name is not None,
-            )
-            for index, candidate in enumerate(resolved.candidates)
-        ],
+        selected_route_name=_selected_route_name(selection),
+        selected_route_key=_selected_route_key(selection),
+        routes=_route_options(resolved),
     )
+
+
+def _route_options(resolved: ResolvedPage) -> list[PlaybackRouteOption]:
+    counts = Counter(
+        candidate.route_name.casefold()
+        for candidate in resolved.candidates
+        if candidate.route_name is not None
+    )
+    routes = [
+        PlaybackRouteOption(
+            line=index,
+            key=candidate.route_name or f"hls:{index}",
+            name=candidate.route_name,
+            kind=candidate.kind,
+            selectable=(
+                candidate.route_name is not None
+                and counts[candidate.route_name.casefold()] == 1
+            ),
+        )
+        for index, candidate in enumerate(resolved.candidates)
+    ]
+    for index, _candidate in enumerate(resolved.direct_candidates):
+        routes.append(PlaybackRouteOption(
+            line=len(routes), key=f"url3:{index}",
+            name=f"直连线路 {index + 1}", kind="url3", selectable=True,
+        ))
+    if resolved.tos_available:
+        routes.append(PlaybackRouteOption(
+            line=len(routes), key="source:tos",
+            name="TOS 直连", kind="tos", selectable=True,
+        ))
+    if resolved.member_token is not None:
+        routes.append(PlaybackRouteOption(
+            line=len(routes), key="source:member",
+            name="会员线路", kind="member", selectable=False,
+        ))
+    return routes
+
+
+def _selected_route_key(selection: PlaybackSelection | None) -> str | None:
+    if selection is None:
+        return None
+    if selection.source == "hls":
+        return selection.route_name
+    if selection.manual_override and selection.source == "tos":
+        return "source:tos"
+    if selection.source == "url3" and selection.line is not None:
+        return f"url3:{selection.line}"
+    return None
+
+
+def _selected_route_name(selection: PlaybackSelection | None) -> str | None:
+    if selection is None:
+        return None
+    if selection.source == "hls":
+        return selection.route_name
+    if selection.manual_override and selection.source == "tos":
+        return "TOS 直连"
+    if selection.source == "url3" and selection.line is not None:
+        return f"直连线路 {selection.line + 1}"
+    return None
 
 
 def _movie_item(

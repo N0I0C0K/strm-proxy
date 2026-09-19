@@ -249,6 +249,55 @@ def test_admin_can_select_named_playback_route_and_restore_auto() -> None:
         assert resolver.refreshes == [True, False, True]
 
 
+def test_admin_lists_all_nine_sources_and_can_pin_direct_route() -> None:
+    page_url = "https://www.xlys02.com/play/27078-0.htm"
+
+    class StubResolver:
+        allowed_hosts = ("www.xlys02.com",)
+
+        async def resolve_page(self, requested: str, *, refresh: bool = False) -> ResolvedPage:
+            return ResolvedPage(
+                page_url=requested,
+                pid=204374,
+                title="测试影片",
+                candidates=tuple(
+                    StreamCandidate("m3u8", f"https://cdn.example/{i}.m3u8#route{i}")
+                    for i in range(4)
+                ),
+                direct_candidates=tuple(
+                    StreamCandidate("url3", f"https://cdn.example/direct{i}")
+                    for i in range(3)
+                ),
+                tos_available=True,
+                member_token="member",
+            )
+
+        async def resolve_direct_candidate(self, requested: str, line: int):
+            return await self.resolve_page(requested), f"https://cdn.example/direct{line}"
+
+    application = create_app(AppSettings(database_path=":memory:"))
+    application.dependency_overrides[get_resolver] = lambda: StubResolver()
+    with TestClient(application) as client:
+        get_app_services(application).media_repository.import_discovered_movies((_movie(),))
+        routes = client.get("/api/admin/media/27078/playback-routes", headers=_auth())
+        assert routes.status_code == 200
+        assert len(routes.json()["routes"]) == 9
+        assert [route["kind"] for route in routes.json()["routes"][4:]] == [
+            "url3", "url3", "url3", "tos", "member",
+        ]
+        assert routes.json()["routes"][-1]["selectable"] is False
+
+        selected = client.put(
+            "/api/admin/media/27078/playback-routes",
+            headers=_auth(), json={"route_name": "url3:1"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["selected_route_key"] == "url3:1"
+        played = client.get("/play", params={"page_url": page_url}, follow_redirects=False)
+        assert played.status_code == 302
+        assert played.headers["location"] == "https://cdn.example/direct1"
+
+
 def test_admin_manual_movie_import_keeps_movie() -> None:
     html = """
     <div class="movie-header">
@@ -358,6 +407,99 @@ def _series(xlys_id: int) -> tuple[CatalogEntry, XlysDetail]:
         source_url=url,
     )
     return entry, detail
+
+
+def test_admin_series_route_applies_to_every_episode_and_restores_auto() -> None:
+    class StubResolver:
+        async def resolve_page(self, page_url: str, *, refresh: bool = False) -> ResolvedPage:
+            index = int(page_url.rsplit("-", 1)[1].split(".", 1)[0])
+            names = ("slow", "iplay") if index == 0 else ("iplay", "slow")
+            return ResolvedPage(
+                page_url=page_url,
+                pid=204374 + index,
+                title="测试剧",
+                candidates=tuple(
+                    StreamCandidate("m3u8", f"https://cdn.example/{index}-{name}.m3u8#{name}")
+                    for name in names
+                ),
+                tos_available=True,
+                direct_candidates=(
+                    StreamCandidate("url3", f"https://cdn.example/{index}-direct"),
+                ),
+            )
+
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = StubResolver()
+    application.dependency_overrides[get_resolver] = lambda: resolver
+    with TestClient(application) as client:
+        services = get_app_services(application)
+        entry, detail = _series(27085)
+        services.media_repository.import_discovered_series((entry,), (detail,))
+        first = "https://www.xlys02.com/play/27085-0.htm"
+        second = "https://www.xlys02.com/play/27085-1.htm"
+        second_page = asyncio.run(resolver.resolve_page(second))
+        services.playback.cache.remember_direct(second_page, "tos")
+
+        selected = client.put(
+            "/api/admin/media/27085/playback-routes",
+            headers=_auth(), json={"route_name": "iplay"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["manual_override"] is True
+        assert selected.json()["selected_route_name"] == "iplay"
+        assert selected.json()["selected_line"] == 1
+        episode_selection = services.playback.cache.get(second_page)
+        assert episode_selection is not None
+        assert episode_selection.source == "hls"
+        assert episode_selection.manual_override is True
+        assert episode_selection.route_name == "iplay"
+        assert episode_selection.line == 0
+
+        cleared = client.delete(
+            "/api/admin/media/27085/playback-routes", headers=_auth()
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["page_url"] == first
+        assert services.playback.cache.get(second_page) is None
+
+        direct = client.put(
+            "/api/admin/media/27085/playback-routes",
+            headers=_auth(), json={"route_name": "url3:0"},
+        )
+        assert direct.status_code == 200
+        direct_selection = services.playback.cache.get(second_page)
+        assert direct_selection is not None
+        assert direct_selection.source == "url3"
+        assert direct_selection.line == 0
+        assert direct_selection.manual_override is True
+
+
+def test_existing_first_episode_choice_migrates_to_whole_series(tmp_path) -> None:
+    settings = AppSettings(database_path=str(tmp_path / "series-route.db"))
+    entry, detail = _series(27085)
+    first = "https://www.xlys02.com/play/27085-0.htm"
+    second = "https://www.xlys02.com/play/27085-1.htm"
+    with TestClient(create_app(settings)) as _client:
+        services = get_app_services(_client.app)
+        services.media_repository.import_discovered_series((entry,), (detail,))
+        services.playback.cache.remember_hls(
+            ResolvedPage(
+                page_url=first, pid=204374, title="测试剧",
+                candidates=(StreamCandidate("m3u8", "https://cdn.example/a.m3u8#iplay"),),
+            ),
+            0, manual_override=True,
+        )
+
+    with TestClient(create_app(settings)) as client:
+        services = get_app_services(client.app)
+        selection = services.playback.cache.get(ResolvedPage(
+            page_url=second, pid=204375, title="测试剧",
+            candidates=(StreamCandidate("m3u8", "https://cdn.example/b.m3u8#iplay"),),
+        ))
+        assert selection is not None
+        assert selection.source == "hls"
+        assert selection.manual_override is True
+        assert selection.route_name == "iplay"
 
 
 def test_admin_refreshes_one_series_and_preserves_policy() -> None:
@@ -480,7 +622,9 @@ def test_recent_series_refresh_uses_successful_get_playback_only() -> None:
                 assert repository.get_series(xlys_id).last_watched_at is None
                 assert client.get("/play", params={"page_url": play_url}, follow_redirects=False).status_code == 302
             assert len(repository.recently_watched_series()) == 2
-            assert client.get("/api/admin/media", headers=_auth()).json()["recently_watched_series_count"] == 2
+            catalog = client.get("/api/admin/media", headers=_auth()).json()
+            assert catalog["recently_watched_series_count"] == 2
+            assert catalog["recently_watched_series"] == ["测试剧27086", "测试剧27085"]
             result = client.post("/api/admin/media/refresh-recent-series", headers=_auth())
             assert result.status_code == 200
             assert result.json()["checked"] == 2

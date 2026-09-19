@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import re
 import secrets
 from typing import Literal
+from urllib.parse import urlparse
 
 import httpx
 
@@ -18,11 +20,12 @@ from .models import ResolverError
 from .xlys import XlysResolver, validate_page_url
 
 
-PlaybackSource = Literal["hls", "tos", "member"]
+PlaybackSource = Literal["hls", "tos", "member", "url3"]
 
 logger = logging.getLogger(__name__)
 
 FAILURE_CACHE_SECONDS = 30
+_EPISODE_PATH = re.compile(r"(?:^|/)play/(?P<series_id>\d+)-\d+\.htm$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,18 @@ class PlaybackSelectionCache:
     def get(self, resolved: ResolvedPage) -> PlaybackSelection | None:
         if not self.enabled:
             return None
+        series_id = _series_id_from_page_url(resolved.page_url)
+        if series_id is not None:
+            series_route = self._series_route(series_id)
+            if series_route is not None:
+                route_name, revision = series_route
+                selection = _manual_route_selection(resolved, route_name, revision)
+                if selection is not None:
+                    return selection
+                logger.warning(
+                    "event=series_route_unavailable series_id=%d pid=%d route=%s",
+                    series_id, resolved.pid, route_name,
+                )
         cache_key = _cache_key(resolved.page_url)
         raw_selection = self._repository.get(cache_key)
         if raw_selection is None:
@@ -154,6 +169,18 @@ class PlaybackSelectionCache:
             source,
         )
 
+    def remember_manual_direct(
+        self, resolved: ResolvedPage, source: Literal["tos", "url3"], line: int | None = None
+    ) -> PlaybackSelection:
+        selection = PlaybackSelection(
+            source=source,
+            line=line,
+            route_name="source:tos" if source == "tos" else f"url3:{line}",
+            manual_override=True,
+        )
+        self._set(resolved.page_url, selection)
+        return selection
+
     def remember_hls(
         self,
         resolved: ResolvedPage,
@@ -196,6 +223,66 @@ class PlaybackSelectionCache:
             "event=play_selection_cache_cleared page=%s",
             safe_url_for_log(page_url),
         )
+
+    def remember_series_route(
+        self, series_id: int, route_name: str, page_urls: tuple[str, ...]
+    ) -> None:
+        """Apply one named HLS route to present and future episodes."""
+        if not self.enabled:
+            return
+        self._repository.set(
+            _series_route_key(series_id),
+            json.dumps(
+                {"route_name": route_name, "revision": _new_revision()},
+                separators=(",", ":"),
+            ),
+        )
+        for page_url in page_urls:
+            self.clear(page_url)
+        logger.info(
+            "event=series_route_set series_id=%d route=%s episodes=%d",
+            series_id, route_name, len(page_urls),
+        )
+
+    def clear_series_route(self, series_id: int, page_urls: tuple[str, ...]) -> None:
+        if not self.enabled:
+            return
+        self._repository.delete(_series_route_key(series_id))
+        for page_url in page_urls:
+            self.clear(page_url)
+        logger.info("event=series_route_cleared series_id=%d", series_id)
+
+    def migrate_legacy_series_route(
+        self, series_id: int, page_urls: tuple[str, ...]
+    ) -> None:
+        """Promote an older first-episode manual choice to the whole series."""
+        if not self.enabled or not page_urls or self._series_route(series_id) is not None:
+            return
+        old = self._stored_selection(page_urls[0])
+        if old is None or not old.manual_override:
+            return
+        if old.source == "hls" and old.route_name:
+            key = old.route_name
+        elif old.source == "tos":
+            key = "source:tos"
+        else:
+            return
+        self.remember_series_route(series_id, key, page_urls)
+        logger.info("event=series_route_migrated series_id=%d route=%s", series_id, key)
+
+    def _series_route(self, series_id: int) -> tuple[str, str] | None:
+        raw = self._repository.get(_series_route_key(series_id))
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+            name, revision = data["route_name"], data["revision"]
+            if not isinstance(name, str) or not name or not isinstance(revision, str) or not revision:
+                raise ValueError("Invalid series route")
+            return name, revision
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            self._repository.delete(_series_route_key(series_id))
+            return None
 
     def invalidate(
         self,
@@ -324,6 +411,12 @@ class PlaybackSelectionCache:
                     else "source_not_advertised"
                 ),
             )
+        if selection.source == "url3":
+            return (
+                selection,
+                None if selection.line is not None and 0 <= selection.line < len(resolved.direct_candidates)
+                else "direct_line_not_available",
+            )
         if selection.route_name is not None:
             wanted_route = selection.route_name.casefold()
             matches = [
@@ -381,6 +474,45 @@ def _cache_key(page_url: str) -> str:
     return f"playback-selection:{page_url}"
 
 
+def _series_route_key(series_id: int) -> str:
+    return f"playback-series-route:{series_id}"
+
+
+def _manual_route_selection(
+    resolved: ResolvedPage, route_name: str, revision: str
+) -> PlaybackSelection | None:
+    if route_name == "source:tos":
+        return (
+            PlaybackSelection(source="tos", route_name=route_name, manual_override=True)
+            if resolved.tos_available else None
+        )
+    if route_name.startswith("url3:"):
+        try:
+            index = int(route_name[5:])
+        except ValueError:
+            return None
+        return (
+            PlaybackSelection(
+                source="url3", line=index, route_name=route_name, manual_override=True
+            )
+            if 0 <= index < len(resolved.direct_candidates) else None
+        )
+    matches = [
+        index for index, candidate in enumerate(resolved.candidates)
+        if candidate.route_name is not None
+        and candidate.route_name.casefold() == route_name.casefold()
+    ]
+    return (
+        _hls_selection(resolved, matches[0], manual_override=True, revision=revision)
+        if len(matches) == 1 else None
+    )
+
+
+def _series_id_from_page_url(page_url: str) -> int | None:
+    match = _EPISODE_PATH.search(urlparse(page_url).path)
+    return int(match.group("series_id")) if match else None
+
+
 def _failure_cache_key(page_url: str) -> str:
     return f"playback-failure:{page_url}"
 
@@ -419,7 +551,7 @@ def _decode_selection(value: str) -> PlaybackSelection:
     if not isinstance(data, dict):
         raise TypeError("Playback selection must be a JSON object")
     source = data.get("source")
-    if source not in {"hls", "tos", "member"}:
+    if source not in {"hls", "tos", "member", "url3"}:
         raise ValueError("Playback selection has an invalid source")
     line = data.get("line")
     if line is not None and type(line) is not int:
@@ -583,10 +715,15 @@ class PlaybackCoordinator:
                     cache_hit=True,
                 )
             try:
-                _resolved, media_url = await resolver.resolve_direct_media(
-                    page_url,
-                    cached_selection.source,
-                )
+                if cached_selection.source == "url3":
+                    assert cached_selection.line is not None
+                    _resolved, media_url = await resolver.resolve_direct_candidate(
+                        page_url, cached_selection.line
+                    )
+                else:
+                    _resolved, media_url = await resolver.resolve_direct_media(
+                        page_url, cached_selection.source,
+                    )
             except (ResolverError, httpx.HTTPError) as exc:
                 failed_cached_source = cached_selection.source
                 self.cache.invalidate(
@@ -596,7 +733,8 @@ class PlaybackCoordinator:
                 )
                 errors = [f"{cached_selection.source}: {_error_detail(exc)}"]
             else:
-                self.cache.remember_direct(resolved, cached_selection.source)
+                if not cached_selection.manual_override:
+                    self.cache.remember_direct(resolved, cached_selection.source)
                 return PlaybackResult(
                     resolved=resolved,
                     selection=cached_selection,

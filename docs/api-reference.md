@@ -38,7 +38,7 @@ http://127.0.0.1:8787
 
 两个 xlys 登录变量必须同时设置；其值对应站点实际使用的 `username`、`password` Cookie 值，而不是 WebDAV 账号。Cookie 按 xlys 域限定，不会发送给媒体 CDN。
 
-`STRM_PROXY_UPSTREAM_PROXY` 设置后，所有服务端上游 HTTP 请求统一经过该 HTTP(S) 代理，包括 xlys 页面和接口、HLS manifest、前台分片及后台预读。该配置适用于浏览器走代理但服务进程直连 CDN 吞吐很差的环境；启动日志仅输出 `upstream_proxy=true|false`，不会记录代理地址或其中的认证信息。
+未设置 `STRM_PROXY_UPSTREAM_PROXY` 时，上游 HTTP 请求使用 HTTPX 默认的系统或环境代理配置。设置该变量后，所有服务端上游 HTTP 请求统一经过指定的 HTTP(S) 代理，包括来源页面和接口、HLS manifest、前台分片及后台预读。启动日志中的 `upstream_proxy=true|false` 仅表示是否指定了此覆盖值，不会记录代理地址或其中的认证信息。
 
 默认监听 `0.0.0.0`，允许局域网设备访问。WebDAV 账号密码在首次建库时由环境变量初始化，此后保存在数据库中，可在管理页修改；环境变量的后续变化不会覆盖数据库凭据。建议修改默认账号密码。HTTP Basic 凭据应通过 HTTPS 或可信私有网络传输。当前播放 API 没有鉴权，不应直接无保护地暴露到公网。
 
@@ -102,11 +102,11 @@ GET /resolve?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
 }
 ```
 
-`sources` 只表示 `/lines` 是否公布对应能力，不表示媒体 CDN 已经验证可用；`/play` 会在返回直连地址前做小型 Range 探测。HLS 线路数量就是 `lines` 数组长度：服务会拆分三个上游字段中的逗号分隔 URL，过滤非 M3U8 项并按 URL 去重，然后从 `0` 连续编号。`lines[].index` 只是当前解析结果中的诊断信息，不是播放接口参数。`lines[].name` 来自 URL fragment（例如 `#iplay`）；fragment 不会发送给媒体 CDN，是持久化选择使用的稳定标识。没有 fragment 时该字段为 `null`。线路地址、顺序和数量都由上游动态返回，服务不会把数字索引暴露给播放器长期保存。
+`sources` 只表示 `/lines` 是否公布对应能力，不表示媒体 CDN 已经验证可用；`/play` 会在返回直连地址前做小型 Range 探测。HLS 线路数量就是 `lines` 数组长度：服务会拆分上游 HLS 字段中的逗号分隔 URL，过滤非 M3U8 项并按 URL 去重。`direct_lines` 单独报告 `url3` 直连线路的序号，不返回临时签名 URL。`lines[].index` 只是当前解析结果中的诊断信息，不是播放接口参数。`lines[].name` 来自 URL fragment（例如 `#iplay`）；fragment 不会发送给媒体 CDN，是持久化选择使用的稳定标识。没有 fragment 时该字段为 `null`。
 
 ### 2.3 `GET` 或 `HEAD /play`
 
-稳定的协议无关播放入口。默认 `source=auto`：先查询持久化播放决策；命中后只复用该 direct source 或命名 HLS 路线，不再探索其他方向。未命中或缓存方向失效时，固定按 `TOS → member → 探测 HLS` 处理来源。HLS 探测会解包 manifest，并以普通流式 GET 读取首个媒体资源的少量前缀；直连对象使用 `Range: bytes=0-63` 验证视频 Content-Type 或 MP4 `ftyp` 文件头。
+稳定的协议无关播放入口。默认 `source=auto`：先查询持久化播放决策；命中人工固定的 `url3`、TOS 或命名 HLS 时优先使用该来源。未命中或缓存方向失效时，按 `TOS → member → 探测 HLS` 自动回退；`url3` 仅在管理页人工选择时使用。HLS 探测会解包 manifest，并以普通流式 GET 读取首个媒体资源的少量前缀；直连对象使用 `Range: bytes=0-63` 验证视频 Content-Type 或 MP4 `ftyp` 文件头。
 
 同一 `page_url` 在一个服务进程内只会同时运行一个探索任务。并发请求共享结果；等待中的客户端超时或断开只会取消该客户端的等待，不会取消探索任务，成功结果仍会写入 SQLite 供客户端后续重试。
 
@@ -431,11 +431,11 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 
 ### 3.10 播放线路管理
 
-这组接口供管理页实时查看并人工固定某个视频的 HLS 线路。人工选择写入既有的 SQLite 播放决策缓存；之后 `source=auto` 命中该记录时只使用该线路，不再先尝试 TOS、member 或其他 HLS。线路按名称而不是当前位置保存，所以上游调整候选顺序时仍能找到例如 `iplay` 的线路。若名称消失或变得不唯一，缓存会失效并恢复正常探索。
+这组接口供管理页实时查看并人工固定播放来源。电影按播放页保存；电视剧按剧集 ID 保存一个选择，已收录和后来新增的分集都会重新获取该集的对应来源。HLS 按名称匹配，`url3` 直连按序号匹配，TOS 每集重新获取。某集缺少所选来源时，该集恢复自动探索。会员入口会显示，但因站点验证码要求而不能固定。
 
 #### `GET /api/admin/media/{xlys_id}/playback-routes`
 
-重新读取播放页及 `/lines`，返回实时 HLS 线路和当前播放缓存状态。电视剧目前使用数据库中的第 1 集作为配置对象。
+重新读取播放页及 `/lines`，返回实时 HLS、`url3`、TOS 和会员来源及当前播放缓存状态。电视剧使用数据库中的第 1 集列出来源；选择后作用于整部剧。
 
 响应示例：
 
@@ -447,20 +447,24 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
   "cache_enabled": true,
   "cached_source": "hls",
   "manual_override": true,
-  "selected_line": 2,
+  "selected_line": 1,
   "selected_route_name": "iplay",
+  "selected_route_key": "iplay",
   "routes": [
-    {"line": 0, "name": "inews", "kind": "m3u8", "selectable": true},
-    {"line": 2, "name": "iplay", "kind": "m3u8_2", "selectable": true}
+    {"line": 0, "key": "inews", "name": "inews", "kind": "m3u8", "selectable": true},
+    {"line": 1, "key": "iplay", "name": "iplay", "kind": "m3u8_2", "selectable": true},
+    {"line": 2, "key": "url3:0", "name": "直连线路 1", "kind": "url3", "selectable": true},
+    {"line": 3, "key": "source:tos", "name": "TOS 直连", "kind": "tos", "selectable": true},
+    {"line": 4, "key": "source:member", "name": "会员线路", "kind": "member", "selectable": false}
   ]
 }
 ```
 
-没有线路名时 `name=null` 且 `selectable=false`，因为单独保存索引无法抵抗上游换序。`cached_source` 也可能是 `tos`、`member` 或 `null`；`manual_override=false` 表示它只是自动探索留下的缓存。
+HLS 没有线路名时 `name=null` 且 `selectable=false`。`url3` 只能按站点返回的序号匹配，若上游调整顺序，所选直连可能变化。`cached_source` 也可能是 `tos`、`url3`、`member` 或 `null`；`manual_override=false` 表示它只是自动探索留下的缓存。
 
 #### `PUT /api/admin/media/{xlys_id}/playback-routes`
 
-按刚刚读取的当前候选名称人工固定线路。名称匹配不区分大小写，最终保存上游返回的原始名称；通常管理页的实时 GET 已刷新解析缓存，因此保存本身不再重复等待上游。
+按 `routes[].key` 人工固定来源。HLS 名称匹配不区分大小写，最终保存上游返回的原始名称；`url3:N` 指定第 N 条直连，`source:tos` 指定 TOS。电视剧会清除已有分集的自动选择缓存，后续逐集匹配；通常管理页的实时 GET 已刷新解析缓存，因此保存本身不再重复等待上游。
 
 ```json
 {
@@ -472,7 +476,7 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 
 #### `DELETE /api/admin/media/{xlys_id}/playback-routes`
 
-清除该视频的成功选择和短期失败缓存，下一次 `/play?source=auto` 会重新执行 `TOS → member → HLS` 探索。这个操作只访问本地 SQLite，不等待上游。
+电影清除该播放页的成功选择和短期失败缓存；电视剧清除整部剧的固定线路以及已收录分集的播放决策缓存。下一次 `/play?source=auto` 会重新执行 `TOS → member → HLS` 探索。这个操作只访问本地 SQLite，不等待上游。
 
 ```json
 {

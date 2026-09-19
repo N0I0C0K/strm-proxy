@@ -1,8 +1,10 @@
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
-from strm_proxy.app import build_xlys_cookie_jar
+from strm_proxy.app import build_xlys_cookie_jar, create_app
 from strm_proxy.config import AppSettings, DavSettings
+from strm_proxy.dependencies import get_app_services
 
 
 def test_settings_reject_invalid_port() -> None:
@@ -174,6 +176,29 @@ def test_settings_read_upstream_proxy_from_environment(
     assert AppSettings.from_environment().upstream_proxy == (
         "http://127.0.0.1:7890"
     )
+
+
+def test_upstream_client_uses_system_proxy_without_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:18081")
+    monkeypatch.setenv("NO_PROXY", "")
+    app = create_app(AppSettings(database_path=":memory:"))
+    with TestClient(app):
+        client = get_app_services(app).http
+        assert client._transport_for_url(httpx.URL("https://example.invalid/")) is not client._transport
+
+
+def test_upstream_proxy_override_replaces_system_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:18081")
+    app = create_app(AppSettings(
+        database_path=":memory:", upstream_proxy="http://127.0.0.1:18082"
+    ))
+    with TestClient(app):
+        client = get_app_services(app).http
+        assert client._transport_for_url(httpx.URL("https://example.invalid/")) is client._transport
 
 
 @pytest.mark.parametrize(

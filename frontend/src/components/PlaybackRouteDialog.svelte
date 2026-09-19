@@ -23,6 +23,13 @@
     }
     return '当前由服务端自动探索'
   }
+
+  function routeSubtitle(kind: string, name: string | null): string {
+    if (kind === 'url3') return '直连地址；按线路序号匹配各集，播放时验证'
+    if (kind === 'tos') return '站点直连；播放时重新获取并验证'
+    if (kind === 'member') return '需要站点验证码，暂不能固定'
+    return name ? `稳定标识 #${name}` : '上游未提供线路名称，不能固定'
+  }
 </script>
 
 <Dialog.Root bind:open>
@@ -34,7 +41,7 @@
         <div>
           <Dialog.Title>选择播放线路</Dialog.Title>
           <Dialog.Description>
-            {media ? `《${media.title}》` : '影片'}的线路名称实时取自播放页；保存后会覆盖该视频当前的自动选择缓存。
+            {media ? `《${media.title}》` : '影片'}的播放来源取自网站；{routes?.media_kind === 'series' ? '选择后应用于整部剧，每集重新获取对应来源。' : '选择后会覆盖该影片的自动选择。'}
           </Dialog.Description>
         </div>
       </div>
@@ -47,26 +54,28 @@
         <div class="route-status">
           <span class:manual={routes.manual_override}></span>
           <strong>{currentSummary(routes)}</strong>
-          {#if routes.media_kind === 'series'}<small>当前作用于第 1 集</small>{/if}
+          {#if routes.media_kind === 'series'}<small>列表取自第 1 集；固定后作用于整部剧</small>{/if}
         </div>
 
         <div class="route-options" aria-label="可用播放线路">
           {#each routes.routes as route}
             <button
               type="button"
-              class:active={route.name !== null && route.name === routes.selected_route_name}
+              class:active={route.key === routes.selected_route_key}
               disabled={busy || !routes.cache_enabled || !route.selectable}
-              onclick={() => route.name && onSelect(route.name)}
+              onclick={() => onSelect(route.key)}
             >
               <span class="route-number">{route.line + 1}</span>
               <span class="route-copy">
                 <strong>线路 {route.line + 1}{route.name ? ` · ${route.name}` : ''}</strong>
-                <small>{route.name ? `稳定标识 #${route.name}` : '上游未提供线路名称，不能固定'}</small>
+                <small>{routeSubtitle(route.kind, route.name)}</small>
               </span>
-              {#if route.name === routes.selected_route_name}<Check size={17} />{/if}
+              {#if route.key === routes.selected_route_key}<Check size={17} />{/if}
             </button>
           {/each}
         </div>
+
+        <p class="route-note">HLS 按线路名称匹配；直连线路按序号匹配。会员线路需要验证码，暂不能固定。</p>
 
         {#if !routes.cache_enabled}
           <p class="form-error route-error">播放决策缓存已由环境变量关闭，无法保存人工线路。</p>

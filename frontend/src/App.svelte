@@ -1,15 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Film, LoaderCircle } from 'lucide-svelte'
   import LoginPage from './components/LoginPage.svelte'
   import LibraryPage from './pages/LibraryPage.svelte'
   import { AdminApiError, adminApi, basicCredentials } from './lib/admin-api'
   import type { Catalog } from './lib/types'
 
   const sessionKey = 'strm-proxy.admin.credentials'
+  function readSession(): string {
+    try {
+      return sessionStorage.getItem(sessionKey) ?? ''
+    } catch {
+      return ''
+    }
+  }
+
+  const savedOnLoad = readSession()
   let credentials = ''
   let catalog: Catalog | null = null
   let loading = false
-  let restoring = true
+  let restoring = Boolean(savedOnLoad)
   let loginError = ''
 
   function saveSession(value: string | null) {
@@ -22,19 +32,10 @@
   }
 
   onMount(() => {
-    let saved = ''
-    try {
-      saved = sessionStorage.getItem(sessionKey) ?? ''
-    } catch {
-      // Continue with the login form when browser storage is unavailable.
-    }
-    if (!saved) {
-      restoring = false
-      return
-    }
-    adminApi<Catalog>(saved, '/media')
+    if (!savedOnLoad) return
+    adminApi<Catalog>(savedOnLoad, '/media')
       .then((result) => {
-        credentials = saved
+        credentials = savedOnLoad
         catalog = result
       })
       .catch((error) => {
@@ -83,8 +84,23 @@
   <meta name="description" content="管理自动发现、人工保留与隐藏的 STRM 影片资源。" />
 </svelte:head>
 
-{#if catalog}
+{#if restoring}
+  <div class="restore-shell" aria-busy="true">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark small"><Film size={20} strokeWidth={2.2} /></div>
+        <div><strong>片库控制台</strong><span>STRM Proxy</span></div>
+      </div>
+    </header>
+    <main class="restore-workspace">
+      <div class="restore-heading"></div>
+      <div class="restore-metrics"></div>
+      <div class="restore-panel"></div>
+      <p class="restore-status"><LoaderCircle class="spin" size={16} />正在打开片库…</p>
+    </main>
+  </div>
+{:else if catalog}
   <LibraryPage {credentials} initialCatalog={catalog} onLogout={logout} onCredentialsChanged={credentialsChanged} />
 {:else}
-  <LoginPage loading={loading || restoring} error={loginError} onLogin={login} />
+  <LoginPage {loading} error={loginError} onLogin={login} />
 {/if}

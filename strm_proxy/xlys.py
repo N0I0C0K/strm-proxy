@@ -29,6 +29,7 @@ _PID_PATTERN = re.compile(r"\bvar\s+pid\s*=\s*(\d+)\s*;")
 _TITLE_PATTERN = re.compile(r"\bvod_name\s*=\s*([\"'])(.*?)\1")
 _PLAY_PATH_PATTERN = re.compile(r"^/(?:[^/?#]+/)?play/\d+-\d+\.htm$")
 _UNICODE_ESCAPE_PATTERN = re.compile(r"\\u([0-9a-fA-F]{4})")
+_HLS_FIELD_PATTERN = re.compile(r"(?:m3u8(?:_\d+)?|url\d+)", re.IGNORECASE)
 
 ManifestResult = tuple[ResolvedPage, StreamCandidate, str]
 DirectMediaResult = tuple[ResolvedPage, str]
@@ -101,7 +102,14 @@ def parse_page(html: str, page_url: str) -> tuple[int, str | None]:
 
 def extract_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
     candidates: list[StreamCandidate] = []
-    for kind in ("m3u8", "m3u8_2", "url3"):
+    # Keep the original order for established fields, then include additional
+    # numbered fields that the site may add for newer playback lines.
+    kinds = [kind for kind in ("m3u8", "m3u8_2", "url3") if kind in data]
+    kinds.extend(
+        kind for kind in data
+        if kind not in kinds and _HLS_FIELD_PATTERN.fullmatch(kind)
+    )
+    for kind in kinds:
         value = data.get(kind)
         if not isinstance(value, str):
             continue
@@ -117,6 +125,26 @@ def extract_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
             unique.append(candidate)
             seen.add(candidate.url)
     return tuple(unique)
+
+
+def extract_direct_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
+    value = data.get("url3")
+    if not isinstance(value, str):
+        return ()
+    candidates: list[StreamCandidate] = []
+    seen: set[str] = set()
+    for raw_url in value.split(","):
+        url = normalize_candidate_url(raw_url.strip(), origin)
+        parsed = urlparse(url)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname
+            and ".m3u8" not in parsed.path.lower()
+            and url not in seen
+        ):
+            candidates.append(StreamCandidate(kind="url3", url=url))
+            seen.add(url)
+    return tuple(candidates)
 
 
 def normalize_candidate_url(candidate_url: str, origin: str) -> str:
@@ -178,7 +206,7 @@ class XlysResolver:
         )
         page_response.raise_for_status()
         pid, title = parse_page(page_response.text, page_url)
-        candidates, tos_available, member_token = await self._fetch_candidates(
+        candidates, direct_candidates, tos_available, member_token = await self._fetch_candidates(
             origin,
             page_url,
             pid,
@@ -190,13 +218,15 @@ class XlysResolver:
             candidates=candidates,
             tos_available=tos_available,
             member_token=member_token,
+            direct_candidates=direct_candidates,
         )
         self._page_cache.set(page_url, resolved)
         logger.info(
-            "event=page_resolved pid=%d title=%r hls_lines=%d tos=%s member=%s",
+            "event=page_resolved pid=%d title=%r hls_lines=%d direct_lines=%d tos=%s member=%s",
             resolved.pid,
             resolved.title,
             len(resolved.candidates),
+            len(resolved.direct_candidates),
             resolved.tos_available,
             resolved.member_token is not None,
         )
@@ -315,6 +345,23 @@ class XlysResolver:
         raise ResolverError(
             f"The {source} source did not return a directly playable media object"
         )
+
+    async def resolve_direct_candidate(
+        self, page_url: str, line: int
+    ) -> DirectMediaResult:
+        resolved = await self.resolve_page(page_url)
+        if line < 0 or line >= len(resolved.direct_candidates):
+            raise ResolverError("The selected direct line is no longer available")
+        candidate = resolved.direct_candidates[line]
+        if await self._probe_direct_media(candidate.url):
+            return resolved, candidate.url
+        # URL3 entries are signed URLs. Refresh once in case the cached URL expired.
+        resolved = await self.resolve_page(page_url, refresh=True)
+        if line < len(resolved.direct_candidates):
+            candidate = resolved.direct_candidates[line]
+            if await self._probe_direct_media(candidate.url):
+                return resolved, candidate.url
+        raise ResolverError("The selected direct line is not a playable video")
 
     async def find_working_hls_line(
         self,
@@ -438,7 +485,7 @@ class XlysResolver:
         origin: str,
         page_url: str,
         pid: int,
-    ) -> tuple[tuple[StreamCandidate, ...], bool, str | None]:
+    ) -> tuple[tuple[StreamCandidate, ...], tuple[StreamCandidate, ...], bool, str | None]:
         timestamp_ms = int(time.time() * 1000)
         response = await self.client.get(
             f"{origin}/lines",
@@ -466,6 +513,7 @@ class XlysResolver:
         if body.get("code") != 0 or not isinstance(body.get("data"), dict):
             raise ResolverError(f"The /lines endpoint rejected the request: {body!r}")
         candidates = extract_candidates(body["data"], origin)
+        direct_candidates = extract_direct_candidates(body["data"], origin)
         tos_available = bool(body["data"].get("tos"))
         raw_member_token = body["data"].get("ptoken")
         member_token = (
@@ -473,16 +521,17 @@ class XlysResolver:
             if raw_member_token not in (None, "", False)
             else None
         )
-        if not candidates and not tos_available and member_token is None:
+        if not candidates and not direct_candidates and not tos_available and member_token is None:
             raise ResolverError("No playable source was returned")
         logger.info(
-            "event=lines_parsed pid=%d hls_lines=%d tos=%s member=%s",
+            "event=lines_parsed pid=%d hls_lines=%d direct_lines=%d tos=%s member=%s",
             pid,
             len(candidates),
+            len(direct_candidates),
             tos_available,
             member_token is not None,
         )
-        return candidates, tos_available, member_token
+        return candidates, direct_candidates, tos_available, member_token
 
     async def _fetch_god_media_url(
         self,

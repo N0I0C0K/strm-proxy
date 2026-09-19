@@ -40,6 +40,7 @@ export type Catalog = {
   counts: CatalogCounts
   recent_limit: number
   recently_watched_series_count: number
+  recently_watched_series: string[]
 }
 
 export type RefreshItem = {
@@ -76,6 +77,7 @@ export type ManualImportResult = {
 
 export type PlaybackRouteOption = {
   line: number
+  key: string
   name: string | null
   kind: string
   selectable: boolean
@@ -86,10 +88,11 @@ export type PlaybackRoutes = {
   title: string | null
   media_kind: MediaKind
   cache_enabled: boolean
-  cached_source: 'hls' | 'tos' | 'member' | null
+  cached_source: 'hls' | 'tos' | 'member' | 'url3' | null
   manual_override: boolean
   selected_line: number | null
   selected_route_name: string | null
+  selected_route_key: string | null
   routes: PlaybackRouteOption[]
 }
 

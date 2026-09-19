@@ -50,9 +50,14 @@ async def resolve(resolver: ResolverDep, page_url: str = Query(...)) -> dict:
         "title": resolved.title,
         "sources": {
             "hls": bool(resolved.candidates),
+            "url3": bool(resolved.direct_candidates),
             "tos": resolved.tos_available,
             "member": resolved.member_token is not None,
         },
+        "direct_lines": [
+            {"index": index, "kind": candidate.kind}
+            for index, candidate in enumerate(resolved.direct_candidates)
+        ],
         "lines": [
             {
                 "index": index,

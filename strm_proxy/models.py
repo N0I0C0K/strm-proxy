@@ -31,3 +31,4 @@ class ResolvedPage:
     candidates: tuple[StreamCandidate, ...]
     tos_available: bool = False
     member_token: str | None = None
+    direct_candidates: tuple[StreamCandidate, ...] = ()

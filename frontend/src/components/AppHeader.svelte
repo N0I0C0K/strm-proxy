@@ -6,6 +6,7 @@
   export let recentRefreshing = false
   export let itemRefreshing = false
   export let recentSeriesCount = 0
+  export let recentSeries: string[] = []
   export let onSync: () => void
   export let onRefreshRecent: () => void
   export let onManualImport: () => void
@@ -35,14 +36,25 @@
   </div>
   <div class="heading-actions">
     <Button.Root class="manual-button" onclick={onManualImport}><CirclePlus size={17} />手动添加</Button.Root>
-    <Button.Root class="manual-button" onclick={onRefreshRecent} disabled={recentRefreshing || syncing || itemRefreshing || recentSeriesCount === 0} title="刷新近 30 天播放过的电视剧详情页和分集">
-      <RefreshCw class={recentRefreshing ? 'spin' : undefined} size={17} />{recentRefreshing ? '正在刷新' : `刷新最近看过的电视剧（${recentSeriesCount}）`}
-    </Button.Root>
+    <div class="recent-tooltip-anchor">
+      <Button.Root class="manual-button" onclick={onRefreshRecent} disabled={recentRefreshing || syncing || itemRefreshing || recentSeriesCount === 0} aria-describedby="recent-series-tooltip">
+        <RefreshCw class={recentRefreshing ? 'spin' : undefined} size={17} />{recentRefreshing ? '正在刷新' : `刷新最近看过的电视剧（${recentSeriesCount}）`}
+      </Button.Root>
+      <div class="action-tooltip recent-tooltip" id="recent-series-tooltip" role="tooltip">
+        <strong>近 30 天看过的电视剧</strong>
+        {#if recentSeries.length}
+          <ul>{#each recentSeries as title}<li>{title}</li>{/each}</ul>
+          <span>将重新读取以上电视剧的详情，并更新当前分集。</span>
+        {:else}
+          <span>暂无观看记录。通过本服务开始播放后会出现在这里。</span>
+        {/if}
+      </div>
+    </div>
     <div class="sync-tooltip-anchor">
       <Button.Root class="sync-button" onclick={onSync} disabled={syncing || recentRefreshing || itemRefreshing} aria-describedby="sync-tooltip">
         <RefreshCw class={syncing ? 'spin' : undefined} size={17} />{syncing ? '正在同步' : '立即同步'}
       </Button.Root>
-      <div class="sync-tooltip" id="sync-tooltip" role="tooltip">
+      <div class="action-tooltip sync-tooltip" id="sync-tooltip" role="tooltip">
         <strong>同步自动片库</strong>
         <span>重新发现电影和电视剧，加入新条目，更新已发现条目的信息及可获取的分集。</span>
         <span>本次未发现的自动条目会退出片库；近 30 天看过的电视剧会保留，人工保留和隐藏策略不变。</span>

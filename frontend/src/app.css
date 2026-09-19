@@ -45,6 +45,13 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .form-error { margin: -7px 0; padding: 9px 11px; font-size: 13px; }
 
 .app-shell { min-height: 100vh; }
+.restore-shell { min-height: 100vh; }
+.restore-workspace { position: relative; width: min(1240px, calc(100% - 44px)); margin: 0 auto; padding-top: 44px; animation: restore-reveal .12s .18s both; }
+.restore-heading { width: min(440px, 70%); height: 47px; margin: 0 0 46px; border-radius: 8px; background: #e6e4dc; }
+.restore-metrics { height: 92px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.restore-panel { min-height: 360px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.restore-status { position: absolute; top: 230px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+@keyframes restore-reveal { from { opacity: 0; } to { opacity: 1; } }
 .topbar { height: 66px; padding: 0 clamp(22px, 4vw, 64px); display: flex; align-items: center; justify-content: space-between; color: white; background: #1d1e1b; }
 .brand-lockup { display: flex; align-items: center; gap: 12px; }
 .brand-lockup div:last-child { display: grid; gap: 2px; }
@@ -66,10 +73,11 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .heading-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; }
 .sync-button { flex: 0 0 auto; padding: 11px 16px; background: var(--ink); color: white; font-size: 13px; box-shadow: 0 5px 18px rgba(32,32,29,.13); }
 .sync-button:hover { background: #35352f; }
-.sync-tooltip-anchor { position: relative; flex: 0 0 auto; }
-.sync-tooltip { position: absolute; z-index: 12; top: calc(100% + 9px); right: 0; width: min(320px, calc(100vw - 32px)); padding: 12px 14px; display: grid; gap: 7px; border: 1px solid #44453e; border-radius: 9px; background: #292a26; color: #e9e8e1; box-shadow: 0 12px 30px rgba(25,25,22,.2); font-size: 11px; line-height: 1.5; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s ease, visibility .12s ease; }
-.sync-tooltip strong { color: white; font-size: 12px; }
-.sync-tooltip-anchor:hover .sync-tooltip, .sync-tooltip-anchor:focus-within .sync-tooltip { opacity: 1; visibility: visible; }
+.sync-tooltip-anchor, .recent-tooltip-anchor { position: relative; flex: 0 0 auto; }
+.action-tooltip { position: absolute; z-index: 12; top: calc(100% + 9px); right: 0; width: min(320px, calc(100vw - 32px)); padding: 12px 14px; display: grid; gap: 7px; border: 1px solid #44453e; border-radius: 9px; background: #292a26; color: #e9e8e1; box-shadow: 0 12px 30px rgba(25,25,22,.2); font-size: 11px; line-height: 1.5; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s ease, visibility .12s ease; }
+.action-tooltip strong { color: white; font-size: 12px; }
+.action-tooltip ul { max-height: 180px; margin: 0; padding: 0 0 0 17px; overflow: auto; display: grid; gap: 3px; }
+.sync-tooltip-anchor:hover .action-tooltip, .sync-tooltip-anchor:focus-within .action-tooltip, .recent-tooltip-anchor:hover .action-tooltip, .recent-tooltip-anchor:focus-within .action-tooltip { opacity: 1; visibility: visible; }
 .manual-button { padding: 10px 14px; border: 1px solid #cfcdc3; background: var(--paper); color: #53524d; font-size: 13px; }
 .manual-button:hover { border-color: #aaa89e; background: white; }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); background: var(--paper); border-radius: 12px; overflow: hidden; margin-bottom: 22px; }
@@ -271,6 +279,7 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .route-status > span.manual { background: var(--green); box-shadow: 0 0 0 4px rgba(64,143,107,.1); }
 .route-status small { margin-left: auto; color: #99968d; }
 .route-options { margin-top: 12px; display: grid; gap: 7px; }
+.route-note { margin: 10px 1px 0; color: #77746c; font-size: 12px; line-height: 1.5; }
 .route-options button { width: 100%; min-height: 56px; padding: 8px 12px; display: flex; align-items: center; gap: 11px; text-align: left; border: 1px solid #dedbd2; border-radius: 9px; background: white; color: #57554f; }
 .route-options button:hover:not(:disabled) { border-color: #aaa297; background: #fbfaf6; }
 .route-options button.active { border-color: #70a98f; background: #f1f8f4; color: #246449; box-shadow: 0 0 0 2px rgba(64,143,107,.08); }
@@ -290,7 +299,8 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 820px) {
-  .sync-tooltip-anchor, .sync-tooltip-anchor .sync-button { width: 100%; }
+  .restore-workspace { width: min(100% - 28px, 1240px); }
+  .sync-tooltip-anchor, .sync-tooltip-anchor .sync-button, .recent-tooltip-anchor, .recent-tooltip-anchor .manual-button { width: 100%; }
   .login-shell { grid-template-columns: 1fr; }
   .login-brand { min-height: 42vh; padding: 42px 28px; }
   .login-brand h1 { font-size: 40px; }

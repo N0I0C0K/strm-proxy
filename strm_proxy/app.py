@@ -86,16 +86,20 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         logger.info("event=app_start")
         repository = create_media_repository(settings.database_path)
         repository.initialize_credentials(settings.dav.username, settings.dav.password)
+        # A custom transport bypasses HTTPX's environment/system proxy lookup.
+        transport = (
+            httpx.AsyncHTTPTransport(retries=2, proxy=settings.upstream_proxy)
+            if settings.upstream_proxy is not None
+            else None
+        )
         async with httpx.AsyncClient(
             follow_redirects=True,
+            trust_env=True,
             timeout=httpx.Timeout(
                 settings.request_timeout_seconds,
                 connect=settings.connect_timeout_seconds,
             ),
-            transport=httpx.AsyncHTTPTransport(
-                retries=2,
-                proxy=settings.upstream_proxy,
-            ),
+            transport=transport,
             headers={
                 "User-Agent": settings.user_agent,
                 "Accept-Encoding": "identity",
@@ -130,6 +134,16 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     enabled=settings.play_selection_cache,
                 )
             )
+            for media in repository.list_media():
+                if media.media_type != "series":
+                    continue
+                playback.cache.migrate_legacy_series_route(
+                    media.xlys_id,
+                    tuple(
+                        media_library.episode_play_url(media, episode)
+                        for episode in repository.list_episodes(media.xlys_id)
+                    ),
+                )
             segment_cache = SegmentCache(
                 client,
                 segment_host=settings.segment_host,
