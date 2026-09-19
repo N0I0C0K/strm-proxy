@@ -1,7 +1,7 @@
 [project]
 name = "strm-proxy"
 version = "0.1.0"
-description = "STRM media library with WebDAV discovery and adaptive playback"
+description = "Turn supported third-party video sources into a WebDAV library for media players"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
