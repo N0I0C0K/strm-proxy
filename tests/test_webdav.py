@@ -44,6 +44,14 @@ def test_webdav_root_lists_media_categories_and_keeps_legacy_strm_direct() -> No
         assert "电视剧" in listing.text
         assert "%E7%94%B5%E8%A7%86%E5%89%A7/" in listing.text
         assert "痴迷.strm" not in listing.text
+        assert "getetag" in listing.text
+
+        unchanged_listing = client.request(
+            "PROPFIND",
+            "/dav/",
+            headers={**_auth(), "Depth": "1"},
+        )
+        assert unchanged_listing.content == listing.content
 
         stream_file = client.get("/dav/痴迷.strm", headers=_auth())
         assert stream_file.status_code == 200

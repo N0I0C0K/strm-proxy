@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from .config import DavSettings
-from .database import Episode, MediaItem, MediaRepository
+from .database import DavRevision, Episode, MediaItem, MediaRepository
 from .dependencies import DavSettingsDep, MediaLibraryDep, MediaRepositoryDep
 from .library import MediaLibrary
 from .logging_utils import safe_url_for_log
@@ -43,8 +43,13 @@ async def webdav_root(request: Request, settings: DavSettingsDep, repository: Me
         return _options()
     _authenticate(request, repository)
     if request.method == "PROPFIND":
+        revisions = repository.dav_revisions(
+            ("root", "movies", "series"),
+            namespace=_dav_namespace(settings),
+        )
         return _propfind_root(
             settings,
+            revisions,
             include_children=request.headers.get("depth", "1") != "0",
         )
     if request.method == "HEAD":
@@ -87,7 +92,17 @@ async def webdav_file(
                 len(movies),
                 request.headers.get("depth", "1"),
             )
-            return _propfind_catalog(request, settings, movies, library)
+            revision = repository.dav_revisions(
+                ("movies",),
+                namespace=_dav_namespace(settings),
+            )["movies"]
+            return _propfind_catalog(
+                request,
+                settings,
+                movies,
+                library,
+                revision,
+            )
         if request.method == "HEAD":
             return Response(headers=DAV_HEADERS, media_type="text/plain")
         return PlainTextResponse(
@@ -108,7 +123,14 @@ async def webdav_file(
                 len(series),
                 request.headers.get("depth", "1"),
             )
-            return _propfind_series_root(settings, series)
+            scopes = ("series",) + tuple(
+                f"series:{item.xlys_id}" for item in series
+            )
+            revisions = repository.dav_revisions(
+                scopes,
+                namespace=_dav_namespace(settings),
+            )
+            return _propfind_series_root(settings, series, revisions)
         if request.method == "HEAD":
             return Response(headers=DAV_HEADERS, media_type="text/plain")
         return PlainTextResponse(
@@ -119,6 +141,7 @@ async def webdav_file(
         return await _series_resource(
             request,
             settings,
+            repository,
             library,
             file_path[len(series_path) + 1 :].strip("/"),
         )
@@ -138,6 +161,7 @@ async def webdav_file(
 async def _series_resource(
     request: Request,
     settings: DavSettings,
+    repository: MediaRepository,
     library: MediaLibrary,
     relative_path: str,
 ) -> Response:
@@ -148,13 +172,22 @@ async def _series_resource(
     if series is None:
         raise HTTPException(status_code=404, detail="WebDAV resource not found")
     season_directory = library.series_season_directory(series)
+    revision: DavRevision | None = None
+    if request.method == "PROPFIND":
+        revision_scope = f"series:{series.xlys_id}"
+        revision = repository.dav_revisions(
+            (revision_scope,),
+            namespace=_dav_namespace(settings),
+        )[revision_scope]
 
     if len(parts) == 1:
         if request.method == "PROPFIND":
+            assert revision is not None
             return _propfind_series_item(
                 settings,
                 series,
                 season_directory,
+                revision,
                 include_child=request.headers.get("depth", "1") != "0",
             )
         if request.method == "HEAD":
@@ -169,6 +202,7 @@ async def _series_resource(
     episodes = library.episodes(series)
     if len(parts) == 2:
         if request.method == "PROPFIND":
+            assert revision is not None
             return _propfind_series_season(
                 request,
                 settings,
@@ -176,6 +210,7 @@ async def _series_resource(
                 season_directory,
                 episodes,
                 library,
+                revision,
             )
         if request.method == "HEAD":
             return Response(headers=DAV_HEADERS, media_type="text/plain")
@@ -190,6 +225,7 @@ async def _series_resource(
     if episode is None:
         raise HTTPException(status_code=404, detail="WebDAV resource not found")
     if request.method == "PROPFIND":
+        assert revision is not None
         return _propfind_episode_file(
             request,
             settings,
@@ -197,6 +233,7 @@ async def _series_resource(
             season_directory,
             episode,
             library,
+            revision,
         )
     return _strm_response(request, library.episode_play_url(series, episode))
 
@@ -247,33 +284,37 @@ def _options() -> Response:
 
 def _propfind_root(
     settings: DavSettings,
+    revisions: dict[str, DavRevision],
     *,
     include_children: bool,
 ) -> Response:
     ElementTree.register_namespace("D", DAV_NAMESPACE)
     multistatus = ElementTree.Element(f"{{{DAV_NAMESPACE}}}multistatus")
-    modified = DAV_LAST_MODIFIED
+    root_revision = revisions["root"]
     _append_response(
         multistatus,
         href="/dav/",
         display_name="strm-proxy",
-        modified=modified,
+        modified=_dav_modified(root_revision.modified_at),
         collection=True,
+        etag=root_revision.etag,
     )
     if include_children:
         _append_response(
             multistatus,
             href=f"/dav/{quote(settings.catalog_directory, safe='')}/",
             display_name=settings.catalog_directory,
-            modified=modified,
+            modified=_dav_modified(revisions["movies"].modified_at),
             collection=True,
+            etag=revisions["movies"].etag,
         )
         _append_response(
             multistatus,
             href=f"/dav/{quote(settings.series_directory, safe='')}/",
             display_name=settings.series_directory,
-            modified=modified,
+            modified=_dav_modified(revisions["series"].modified_at),
             collection=True,
+            etag=revisions["series"].etag,
         )
 
     return _multistatus_response(multistatus)
@@ -282,6 +323,7 @@ def _propfind_root(
 def _propfind_series_root(
     settings: DavSettings,
     series_items: tuple[MediaItem, ...],
+    revisions: dict[str, DavRevision],
 ) -> Response:
     multistatus = _multistatus()
     root_href = f"/dav/{quote(settings.series_directory, safe='')}/"
@@ -289,16 +331,19 @@ def _propfind_series_root(
         multistatus,
         href=root_href,
         display_name=settings.series_directory,
-        modified=DAV_LAST_MODIFIED,
+        modified=_dav_modified(revisions["series"].modified_at),
         collection=True,
+        etag=revisions["series"].etag,
     )
     for series in series_items:
+        revision = revisions[f"series:{series.xlys_id}"]
         _append_response(
             multistatus,
             href=root_href + quote(series.dav_name, safe="") + "/",
             display_name=series.dav_name,
-            modified=_dav_modified(series.source_updated_on),
+            modified=_dav_modified(revision.modified_at),
             collection=True,
+            etag=revision.etag,
         )
     return _multistatus_response(multistatus)
 
@@ -307,6 +352,7 @@ def _propfind_series_item(
     settings: DavSettings,
     series: MediaItem,
     season_directory: str,
+    revision: DavRevision,
     *,
     include_child: bool,
 ) -> Response:
@@ -316,16 +362,18 @@ def _propfind_series_item(
         multistatus,
         href=href,
         display_name=series.dav_name,
-        modified=_dav_modified(series.source_updated_on),
+        modified=_dav_modified(revision.modified_at),
         collection=True,
+        etag=revision.etag,
     )
     if include_child:
         _append_response(
             multistatus,
             href=href + quote(season_directory, safe="") + "/",
             display_name=season_directory,
-            modified=_dav_modified(series.source_updated_on),
+            modified=_dav_modified(revision.modified_at),
             collection=True,
+            etag=revision.etag,
         )
     return _multistatus_response(multistatus)
 
@@ -337,6 +385,7 @@ def _propfind_series_season(
     season_directory: str,
     episodes: tuple[Episode, ...],
     library: MediaLibrary,
+    revision: DavRevision,
 ) -> Response:
     multistatus = _multistatus()
     href = _series_href(settings, series) + quote(season_directory, safe="") + "/"
@@ -344,8 +393,9 @@ def _propfind_series_season(
         multistatus,
         href=href,
         display_name=season_directory,
-        modified=_dav_modified(series.source_updated_on),
+        modified=_dav_modified(revision.modified_at),
         collection=True,
+        etag=revision.etag,
     )
     if request.headers.get("depth", "1") != "0":
         for episode in episodes:
@@ -358,7 +408,7 @@ def _propfind_series_season(
                 multistatus,
                 href=href + quote(filename, safe=""),
                 display_name=filename,
-                modified=_dav_modified(series.source_updated_on),
+                modified=_dav_modified(revision.modified_at),
                 collection=False,
                 content_length=len(content.encode("utf-8")),
                 etag=_etag(content),
@@ -373,6 +423,7 @@ def _propfind_episode_file(
     season_directory: str,
     episode: Episode,
     library: MediaLibrary,
+    revision: DavRevision,
 ) -> Response:
     multistatus = _multistatus()
     filename = library.episode_filename(series, episode)
@@ -390,7 +441,7 @@ def _propfind_episode_file(
         multistatus,
         href=href,
         display_name=filename,
-        modified=_dav_modified(series.source_updated_on),
+        modified=_dav_modified(revision.modified_at),
         collection=False,
         content_length=len(content.encode("utf-8")),
         etag=_etag(content),
@@ -426,6 +477,7 @@ def _propfind_catalog(
     settings: DavSettings,
     movies: tuple[MediaItem, ...],
     library: MediaLibrary,
+    revision: DavRevision,
 ) -> Response:
     multistatus = _multistatus()
     directory_href = f"/dav/{quote(settings.catalog_directory, safe='')}/"
@@ -433,8 +485,9 @@ def _propfind_catalog(
         multistatus,
         href=directory_href,
         display_name=settings.catalog_directory,
-        modified=DAV_LAST_MODIFIED,
+        modified=_dav_modified(revision.modified_at),
         collection=True,
+        etag=revision.etag,
     )
     for movie in movies:
         content = _strm_content_for_page(
@@ -535,7 +588,16 @@ def _strm_content_for_page(request: Request, page_url: str) -> str:
     return build_play_url(request, page_url) + "\n"
 
 
-def _dav_modified(value: date | str | None) -> str:
+def _dav_namespace(settings: DavSettings) -> str:
+    return f"{settings.catalog_directory}\0{settings.series_directory}"
+
+
+def _dav_modified(value: datetime | date | str | None) -> str:
+    if isinstance(value, datetime):
+        parsed_datetime = value
+        if parsed_datetime.tzinfo is None:
+            parsed_datetime = parsed_datetime.replace(tzinfo=timezone.utc)
+        return format_datetime(parsed_datetime.astimezone(timezone.utc), usegmt=True)
     if isinstance(value, date):
         parsed = value
     else:

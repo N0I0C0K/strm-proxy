@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
 import hashlib
+import json
 import re
 import secrets
 from pathlib import Path
@@ -31,6 +33,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .catalog import CatalogEntry, safe_media_name
 from .detail import XlysDetail, parse_season_number
@@ -134,6 +137,24 @@ class AccessCredential(Base):
     password_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class DavRevisionRecord(Base):
+    __tablename__ = "dav_revisions"
+
+    scope: Mapped[str] = mapped_column(String(255), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    modified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@dataclass(frozen=True)
+class DavRevision:
+    fingerprint: str
+    modified_at: datetime
+
+    @property
+    def etag(self) -> str:
+        return f'"{self.fingerprint}"'
+
+
 def _hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000
@@ -221,6 +242,145 @@ class MediaRepository:
             return secrets.compare_digest(username, credential.username) and secrets.compare_digest(
                 _hash_password(password, credential.salt), credential.password_hash
             )
+
+    def dav_revisions(
+        self,
+        scopes: tuple[str, ...],
+        *,
+        namespace: str = "",
+    ) -> dict[str, DavRevision]:
+        """Return persistent revisions for the requested DAV collection scopes.
+
+        Supported scopes are ``root``, ``movies``, ``series`` and
+        ``series:<xlys_id>``. A revision advances only when the corresponding
+        WebDAV-visible tree changes, and survives process restarts.
+        """
+        requested = set(scopes)
+        if not requested:
+            return {}
+        invalid = {
+            scope
+            for scope in requested
+            if scope not in {"root", "movies", "series"}
+            and not re.fullmatch(r"series:\d+", scope)
+        }
+        if invalid:
+            raise ValueError(f"Unsupported DAV revision scopes: {sorted(invalid)}")
+
+        need_movies = bool(requested & {"root", "movies"})
+        need_all_series = bool(requested & {"root", "series"})
+        requested_series_ids = {
+            int(scope.partition(":")[2])
+            for scope in requested
+            if scope.startswith("series:")
+        }
+
+        with self._sessions.begin() as session:
+            movie_state: tuple[tuple[int, str], ...] = ()
+            if need_movies:
+                movie_state = tuple(
+                    tuple(row)
+                    for row in session.execute(
+                        select(MediaItem.xlys_id, MediaItem.dav_name)
+                        .where(
+                            MediaItem.media_type == MediaType.MOVIE.value,
+                            MediaItem.policy != MoviePolicy.HIDDEN.value,
+                        )
+                        .order_by(MediaItem.xlys_id)
+                    ).all()
+                )
+
+            series_query = select(
+                MediaItem.xlys_id,
+                MediaItem.dav_name,
+                MediaItem.title,
+                MediaItem.season_number,
+            ).where(
+                MediaItem.media_type == MediaType.SERIES.value,
+                MediaItem.policy != MoviePolicy.HIDDEN.value,
+            )
+            if not need_all_series:
+                series_query = series_query.where(
+                    MediaItem.xlys_id.in_(requested_series_ids)
+                )
+            series_rows = tuple(
+                session.execute(series_query.order_by(MediaItem.xlys_id)).all()
+            )
+            series_ids = tuple(row.xlys_id for row in series_rows)
+            episode_rows = (
+                tuple(
+                    session.execute(
+                        select(
+                            Episode.media_xlys_id,
+                            Episode.source_index,
+                            Episode.play_path,
+                        )
+                        .where(Episode.media_xlys_id.in_(series_ids))
+                        .order_by(Episode.media_xlys_id, Episode.source_index)
+                    ).all()
+                )
+                if series_ids
+                else ()
+            )
+            episodes_by_series: dict[int, list[tuple[int, str]]] = {}
+            for episode in episode_rows:
+                episodes_by_series.setdefault(episode.media_xlys_id, []).append(
+                    (episode.source_index, episode.play_path)
+                )
+
+            series_fingerprints: dict[int, str] = {}
+            for item in series_rows:
+                series_fingerprints[item.xlys_id] = _dav_fingerprint(
+                    namespace,
+                    "series-item",
+                    (
+                        item.xlys_id,
+                        item.dav_name,
+                        item.title,
+                        item.season_number or 1,
+                        episodes_by_series.get(item.xlys_id, []),
+                    ),
+                )
+
+            fingerprints: dict[str, str] = {}
+            movie_fingerprint = _dav_fingerprint(
+                namespace,
+                "movies",
+                movie_state,
+            )
+            series_fingerprint = _dav_fingerprint(
+                namespace,
+                "series",
+                tuple(sorted(series_fingerprints.items())),
+            )
+            for scope in requested:
+                if scope == "movies":
+                    fingerprints[scope] = movie_fingerprint
+                elif scope == "series":
+                    fingerprints[scope] = series_fingerprint
+                elif scope == "root":
+                    fingerprints[scope] = _dav_fingerprint(
+                        namespace,
+                        "root",
+                        (movie_fingerprint, series_fingerprint),
+                    )
+                else:
+                    xlys_id = int(scope.partition(":")[2])
+                    fingerprints[scope] = series_fingerprints.get(
+                        xlys_id,
+                        _dav_fingerprint(namespace, "missing-series", xlys_id),
+                    )
+
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            return {
+                scope: _persist_dav_revision(
+                    session,
+                    scope,
+                    fingerprint,
+                    now,
+                )
+                for scope, fingerprint in fingerprints.items()
+            }
 
     def change_credentials(self, current_password: str, username: str, password: str) -> bool:
         with self._sessions.begin() as session:
@@ -896,6 +1056,48 @@ def _date_at_utc_midnight(value: str | None) -> datetime | None:
     if parsed is None:
         return None
     return datetime.combine(parsed, time.min, tzinfo=timezone.utc)
+
+
+def _dav_fingerprint(namespace: str, kind: str, value: object) -> str:
+    payload = json.dumps(
+        [namespace, kind, value],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _persist_dav_revision(
+    session: Session,
+    scope: str,
+    fingerprint: str,
+    now: datetime,
+) -> DavRevision:
+    stored = session.get(DavRevisionRecord, scope)
+    if stored is None:
+        session.execute(
+            sqlite_insert(DavRevisionRecord)
+            .values(
+                scope=scope,
+                fingerprint=fingerprint,
+                modified_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=[DavRevisionRecord.scope])
+        )
+        stored = session.get(DavRevisionRecord, scope)
+        if stored is None:
+            raise RuntimeError(f"Failed to initialize DAV revision: {scope}")
+    if stored.fingerprint != fingerprint:
+        previous = stored.modified_at
+        if previous.tzinfo is None:
+            previous = previous.replace(tzinfo=timezone.utc)
+        stored.fingerprint = fingerprint
+        stored.modified_at = max(now, previous + timedelta(seconds=1))
+
+    modified_at = stored.modified_at
+    if modified_at.tzinfo is None:
+        modified_at = modified_at.replace(tzinfo=timezone.utc)
+    return DavRevision(fingerprint=stored.fingerprint, modified_at=modified_at)
 
 
 def _available_movie_name(

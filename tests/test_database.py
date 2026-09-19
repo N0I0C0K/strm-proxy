@@ -66,6 +66,9 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
     cache_columns = {
         column["name"] for column in inspector.get_columns("cache_entries")
     }
+    dav_revision_columns = {
+        column["name"] for column in inspector.get_columns("dav_revisions")
+    }
 
     assert media_columns == {
         "xlys_id",
@@ -92,7 +95,49 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
         "play_path",
     }
     assert cache_columns == {"key", "value", "expires_at"}
+    assert dav_revision_columns == {"scope", "fingerprint", "modified_at"}
     repository.close()
+
+
+def test_dav_revisions_change_only_with_visible_content_and_survive_restart() -> None:
+    database_path = Path("data") / f"dav-revisions-{uuid4().hex}.db"
+    repository = create_media_repository(str(database_path))
+
+    def series(episode_count: int) -> CatalogEntry:
+        return CatalogEntry(
+            xlys_id=27085,
+            title="柯蒂斯总统 第一季",
+            year=2026,
+            cover_url=None,
+            source_updated_on="2026-09-19",
+            dav_filename="柯蒂斯总统 第一季 (2026).strm",
+            source_url="https://www.xlys02.com/meiju/27085.htm",
+            available_episode_count=episode_count,
+        )
+
+    scopes = ("root", "movies", "series", "series:27085")
+    repository.import_discovered_series((series(1),), ())
+    initial = repository.dav_revisions(scopes, namespace="电影\0电视剧")
+
+    repository.import_discovered_series((series(1),), ())
+    unchanged = repository.dav_revisions(scopes, namespace="电影\0电视剧")
+    assert unchanged == initial
+
+    try:
+        repository.close()
+        repository = create_media_repository(str(database_path))
+        assert repository.dav_revisions(scopes, namespace="电影\0电视剧") == initial
+
+        repository.import_discovered_series((series(2),), ())
+        updated = repository.dav_revisions(scopes, namespace="电影\0电视剧")
+        assert updated["movies"] == initial["movies"]
+        for scope in ("root", "series", "series:27085"):
+            assert updated[scope].fingerprint != initial[scope].fingerprint
+            assert updated[scope].modified_at > initial[scope].modified_at
+    finally:
+        repository.close()
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(database_path) + suffix).unlink(missing_ok=True)
 
 
 def test_generic_cache_supports_values_expiration_and_deletion() -> None:
