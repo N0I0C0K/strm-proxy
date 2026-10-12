@@ -47,13 +47,19 @@ The first scan of the movie or TV folder may take a little longer while the libr
 
 | In the dashboard | What it does |
 | --- | --- |
-| **Sync Now (立即同步)** | Rediscovers movies and TV series and updates the automatic library. Kept and hidden titles, as well as recently watched series, follow their existing retention rules. |
+| **Sync a provider (单独同步)** | Discovers only the selected provider's movies and TV series. Each provider shows its title counts, last result, and time. Other providers are not requested or updated. |
+| **Sync All (同步全部)** | Updates XLYS and LIBVIO independently. Failed providers keep their existing titles. |
 | **Refresh Media (刷新影片)** | Reads that title's details again and updates its episodes if it is a TV series. |
+| **Add by URL (通过网址添加)** | Imports an XLYS or LIBVIO detail page and keeps the title in your library. |
 | **Refresh Recently Watched Series (刷新最近看过的电视剧)** | Checks series played through this service in the past 30 days and reports new episodes. |
 | **Keep / Hide (保留 / 隐藏)** | Kept titles stay through routine syncs; hidden titles do not appear in WebDAV. |
 | **Click a poster or title** | Opens details, episodes, source information, library controls, and playback source settings. |
 
-List and grid views support filtering, sorting, and pagination. TV cards show the number of episodes currently in the library. Sync runs when you choose **Sync Now**; it is not scheduled automatically.
+List and grid views support combined provider, media type, and library policy filters, title or year search, sorting, and pagination. TV cards show the number of episodes currently in the library. Choose a provider's **Sync** button or **Sync All** to update; sync is not scheduled automatically. Each provider's last result survives a service restart.
+
+Each provider discovers its 50 most recent titles and highly rated titles from the past four years (movie rating > 7, series rating > 8). LIBVIO titles must offer online playback; download-only listings are skipped. If a provider fails, its previous library is preserved while other providers continue syncing. The dashboard reports incomplete discovery.
+
+LIBVIO currently supports the verified ArtPlayer/SmartPlay MP4 flow, with the player accessing the video CDN directly. Online routes that only offer HLS are not supported yet. Discovery checks for online playback entries; media availability is verified when playback starts.
 
 ## If something goes wrong
 
