@@ -46,7 +46,9 @@
           loginError = error instanceof Error ? error.message : '无法连接管理服务'
         }
       })
-      .finally(() => { restoring = false })
+      .finally(() => {
+        restoring = false
+      })
   })
 
   async function login(username: string, password: string) {
@@ -100,7 +102,12 @@
     </main>
   </div>
 {:else if catalog}
-  <LibraryPage {credentials} initialCatalog={catalog} onLogout={logout} onCredentialsChanged={credentialsChanged} />
+  <LibraryPage
+    {credentials}
+    initialCatalog={catalog}
+    onLogout={logout}
+    onCredentialsChanged={credentialsChanged}
+  />
 {:else}
   <LoginPage {loading} error={loginError} onLogin={login} />
 {/if}

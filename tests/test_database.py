@@ -34,9 +34,7 @@ def _movie(
 
 def test_repository_imports_movie_into_unified_media_table() -> None:
     repository = create_media_repository(":memory:")
-    repository.import_discovered_movies(
-        (_movie(27078, cover_url="https://img/1.jpg"),)
-    )
+    repository.import_discovered_movies((_movie(27078, cover_url="https://img/1.jpg"),))
 
     movies = repository.list_visible_movies()
     assert len(movies) == 1
@@ -45,9 +43,7 @@ def test_repository_imports_movie_into_unified_media_table() -> None:
     assert movies[0].title == "电影27078"
     assert movies[0].year == 2025
     assert movies[0].cover_url == "https://img/1.jpg"
-    assert movies[0].source_url == (
-        "https://www.xlys02.com/juqing/27078.htm"
-    )
+    assert movies[0].source_url == ("https://www.xlys02.com/juqing/27078.htm")
     assert movies[0].source_updated_on == date(2026, 8, 28)
     assert movies[0].policy == MoviePolicy.AUTO.value
     assert movies[0].dav_name == "电影27078 (2025).strm"
@@ -57,21 +53,15 @@ def test_repository_imports_movie_into_unified_media_table() -> None:
 def test_unified_tables_contain_the_agreed_business_fields() -> None:
     repository = create_media_repository(":memory:")
     inspector = inspect(repository.engine)
-    media_columns = {
-        column["name"] for column in inspector.get_columns("media_items")
-    }
-    episode_columns = {
-        column["name"] for column in inspector.get_columns("episodes")
-    }
-    cache_columns = {
-        column["name"] for column in inspector.get_columns("cache_entries")
-    }
-    dav_revision_columns = {
-        column["name"] for column in inspector.get_columns("dav_revisions")
-    }
+    media_columns = {column["name"] for column in inspector.get_columns("media_items")}
+    episode_columns = {column["name"] for column in inspector.get_columns("episodes")}
+    cache_columns = {column["name"] for column in inspector.get_columns("cache_entries")}
+    dav_revision_columns = {column["name"] for column in inspector.get_columns("dav_revisions")}
 
     assert media_columns == {
         "xlys_id",
+        "provider",
+        "source_media_id",
         "media_type",
         "title",
         "year",
@@ -223,9 +213,7 @@ def test_hidden_movies_are_not_visible() -> None:
     repository.import_discovered_movies((_movie(1), _movie(2)))
     repository.set_movie_policy(1, MoviePolicy.HIDDEN)
 
-    assert [
-        movie.xlys_id for movie in repository.list_visible_movies()
-    ] == [2]
+    assert [movie.xlys_id for movie in repository.list_visible_movies()] == [2]
     repository.close()
 
 
@@ -331,9 +319,7 @@ def test_sqlite_database_persists_media_between_restarts() -> None:
         repository.close()
 
         reopened = create_media_repository(str(database_path))
-        assert [
-            movie.xlys_id for movie in reopened.list_visible_movies()
-        ] == [27078]
+        assert [movie.xlys_id for movie in reopened.list_visible_movies()] == [27078]
         reopened.close()
     finally:
         for suffix in ("", "-wal", "-shm"):

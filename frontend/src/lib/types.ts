@@ -5,6 +5,8 @@ export type LayoutMode = 'list' | 'grid'
 
 export type Media = {
   xlys_id: number
+  provider: 'xlys' | 'libvio'
+  source_media_id: string
   title: string
   year: number | null
   cover_url: string | null
@@ -35,12 +37,24 @@ export type CatalogCounts = {
   series: number
 }
 
+export type Provider = 'xlys' | 'libvio'
+export type ProviderFilter = 'all' | Provider
+
+export type ProviderSync = {
+  provider: Provider
+  status: 'idle' | 'syncing' | 'success' | 'partial' | 'failed'
+  last_synced_at: string | null
+  failures: string[]
+}
+
 export type Catalog = {
   movies: Media[]
   counts: CatalogCounts
   recent_limit: number
   recently_watched_series_count: number
   recently_watched_series: string[]
+  discovery_failures?: string[]
+  provider_syncs?: ProviderSync[]
 }
 
 export type RefreshItem = {
@@ -65,6 +79,8 @@ export type ManualImportResult = {
   kind: MediaKind
   imported: boolean
   xlys_id: number
+  provider: 'xlys' | 'libvio'
+  source_media_id: string | null
   title: string
   year: number | null
   cover_url: string | null
@@ -118,4 +134,10 @@ export const mediaTypeOptions = [
   { value: 'all', label: '全部类型' },
   { value: 'movie', label: '电影' },
   { value: 'series', label: '电视剧' },
+]
+
+export const providerOptions = [
+  { value: 'all', label: '全部供应商' },
+  { value: 'libvio', label: 'LIBVIO' },
+  { value: 'xlys', label: '雪落影视（XLYS）' },
 ]

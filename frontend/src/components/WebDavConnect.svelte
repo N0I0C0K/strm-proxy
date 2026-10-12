@@ -61,16 +61,30 @@
     <Dialog.Overlay class="modal-layer" />
     <Dialog.Content class="dav-dialog">
       <div class="dav-dialog-heading">
-        <div class="dav-connect-heading"><Link2 size={19} /><div><Dialog.Title>WebDAV 连接</Dialog.Title><Dialog.Description>在播放器中添加此地址，或使用爆米花快捷识别。</Dialog.Description></div></div>
-        <Dialog.Close class="detail-close" aria-label="关闭 WebDAV 连接信息"><X size={18} /></Dialog.Close>
+        <div class="dav-connect-heading">
+          <Link2 size={19} />
+          <div>
+            <Dialog.Title>WebDAV 连接</Dialog.Title><Dialog.Description
+              >在播放器中添加此地址，或使用爆米花快捷识别。</Dialog.Description
+            >
+          </div>
+        </div>
+        <Dialog.Close class="detail-close" aria-label="关闭 WebDAV 连接信息"
+          ><X size={18} /></Dialog.Close
+        >
       </div>
       <div class="dav-connect-main">
         <label for="dav-address">WebDAV 地址</label>
         <input id="dav-address" value={address} type="url" readonly spellcheck="false" />
-        {#if localAddress}<small>当前地址仅供本机使用。其他设备连接时，请通过这台电脑的局域网 IP 或域名打开管理页，再复制连接信息。</small>{/if}
+        {#if localAddress}<small
+            >当前地址仅供本机使用。其他设备连接时，请通过这台电脑的局域网 IP
+            或域名打开管理页，再复制连接信息。</small
+          >{/if}
         <span class="dav-field-label">爆米花识别文本</span>
         <code class="dav-quick-text">{quickText}</code>
-        <button class="dav-copy-button" type="button" onclick={copy}><Copy size={16} />复制完整连接信息</button>
+        <button class="dav-copy-button" type="button" onclick={copy}
+          ><Copy size={16} />复制完整连接信息</button
+        >
         {#if copyMessage}<p class="dav-copy-message" role="status">{copyMessage}</p>{/if}
       </div>
     </Dialog.Content>

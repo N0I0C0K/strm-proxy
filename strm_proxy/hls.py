@@ -8,9 +8,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from .models import ResolverError
 from .logging_utils import safe_url_for_log
-
+from .models import ResolverError
 
 WRAPPER_PREFIX_BYTES = 3354
 DEFAULT_SEGMENT_ORIGIN = "https://vod.xl01.me/"
@@ -43,8 +42,7 @@ def decode_wrapped_manifest(payload: bytes, source_url: str) -> str:
     if not decoded.lstrip().startswith("#EXTM3U"):
         raise ResolverError("Decoded response is not an HLS manifest")
     logger.debug(
-        "event=manifest_payload_decoded source=%s mode=%s input_bytes=%d "
-        "decoded_bytes=%d",
+        "event=manifest_payload_decoded source=%s mode=%s input_bytes=%d decoded_bytes=%d",
         safe_url_for_log(source_url),
         wrapper_mode,
         len(payload),
@@ -87,7 +85,7 @@ def first_playlist_uri(manifest: str) -> str | None:
     return None
 
 
-def find_mpeg_ts_offset(payload: bytes) -> int | None:
+def find_mpeg_ts_offset(payload: bytes | bytearray) -> int | None:
     """Find three aligned MPEG-TS packets, including inside a fake PNG."""
     required = TS_PACKET_SIZE * 2
     for offset in range(max(0, len(payload) - required)):
@@ -163,10 +161,7 @@ async def iter_aligned_mpeg_ts(
 
             packet_count = len(pending) // TS_PACKET_SIZE
             valid_count = 0
-            while (
-                valid_count < packet_count
-                and pending[valid_count * TS_PACKET_SIZE] == 0x47
-            ):
+            while valid_count < packet_count and pending[valid_count * TS_PACKET_SIZE] == 0x47:
                 valid_count += 1
             if valid_count == 0:
                 return

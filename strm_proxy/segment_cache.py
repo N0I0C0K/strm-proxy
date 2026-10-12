@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from dataclasses import dataclass
 import hashlib
 import logging
 import re
+from collections import OrderedDict
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
 
 from .hls import iter_aligned_mpeg_ts, prepare_mpeg_ts_stream
 from .logging_utils import describe_http_error, safe_url_for_log
-
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +102,7 @@ class SegmentCache:
         segments = _parse_ts_segments(manifest)
         if not segments:
             return None
-        identity = hashlib.sha256(
-            f"{page_url}\0{line}\0{manifest}".encode()
-        ).hexdigest()[:24]
+        identity = hashlib.sha256(f"{page_url}\0{line}\0{manifest}".encode()).hexdigest()[:24]
         self._playlists[identity] = _Playlist(
             referer=page_url,
             revision=revision,
@@ -157,12 +154,7 @@ class SegmentCache:
         *,
         requested_url: str,
     ) -> None:
-        if (
-            not self.enabled
-            or self.prefetch_seconds <= 0
-            or playlist_id is None
-            or index is None
-        ):
+        if not self.enabled or self.prefetch_seconds <= 0 or playlist_id is None or index is None:
             return
         playlist = self._playlists.get(playlist_id)
         if playlist is None or not 0 <= index < len(playlist.segments):
@@ -198,8 +190,7 @@ class SegmentCache:
                 )
             )
             logger.info(
-                "event=segment_prefetch_started playlist=%s start=%d end=%d "
-                "target_seconds=%s",
+                "event=segment_prefetch_started playlist=%s start=%d end=%d target_seconds=%s",
                 playlist_id,
                 start,
                 end,
@@ -305,8 +296,7 @@ class SegmentCache:
                 spec = playlist.segments[item]
                 if isinstance(result, BaseException):
                     logger.warning(
-                        "event=segment_prefetch_failed playlist=%s index=%d "
-                        "target=%s detail=%s",
+                        "event=segment_prefetch_failed playlist=%s index=%d target=%s detail=%s",
                         playlist_id,
                         item,
                         safe_url_for_log(spec.url),
@@ -328,8 +318,7 @@ class SegmentCache:
                     break
                 protected.add(key)
                 logger.debug(
-                    "event=segment_prefetch_cached playlist=%s index=%d "
-                    "bytes=%d cache_bytes=%d",
+                    "event=segment_prefetch_cached playlist=%s index=%d bytes=%d cache_bytes=%d",
                     playlist_id,
                     item,
                     len(payload.data),
@@ -375,9 +364,7 @@ class SegmentCache:
             parsed = urlparse(url)
             port = parsed.port
         except ValueError:
-            raise ValueError(
-                "Prefetch segment URL is outside the allowed host"
-            ) from None
+            raise ValueError("Prefetch segment URL is outside the allowed host") from None
         if (
             parsed.scheme != "https"
             or parsed.hostname != self.segment_host
@@ -426,11 +413,7 @@ class SegmentCache:
             self._total_bytes -= len(existing.data)
         while self._total_bytes + size > self.max_bytes:
             evicted_key = next(
-                (
-                    candidate
-                    for candidate in self._entries
-                    if candidate not in protected
-                ),
+                (candidate for candidate in self._entries if candidate not in protected),
                 None,
             )
             if evicted_key is None:
@@ -476,8 +459,7 @@ class SegmentCache:
             )
         else:
             logger.info(
-                "event=segment_prefetch_finished playlist=%s entries=%d "
-                "cache_bytes=%d",
+                "event=segment_prefetch_finished playlist=%s entries=%d cache_bytes=%d",
                 playlist_id,
                 len(self._entries),
                 self._total_bytes,
@@ -496,9 +478,7 @@ def _parse_ts_segments(manifest: str) -> tuple[SegmentSpec, ...]:
         if not stripped or stripped.startswith("#"):
             continue
         if urlparse(stripped).path.lower().endswith(".ts"):
-            segments.append(
-                SegmentSpec(url=stripped, duration_seconds=duration)
-            )
+            segments.append(SegmentSpec(url=stripped, duration_seconds=duration))
             duration = _DEFAULT_SEGMENT_SECONDS
     return tuple(segments)
 

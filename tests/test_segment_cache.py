@@ -4,7 +4,6 @@ import httpx
 
 from strm_proxy.segment_cache import SegmentCache, SegmentPayload
 
-
 SEGMENT_PACKET = b"\x47" + b"\x00" * 187
 
 
@@ -35,12 +34,10 @@ def test_cache_is_global_lru_bounded_by_bytes() -> None:
             cache.complete_foreground(second, SegmentPayload(b"67890"))
 
             assert cache.total_bytes == 5
-            assert cache.cached(
-                "https://vod.xl01.me/1.ts", "https://page/1"
-            ) is None
-            assert cache.cached(
-                "https://vod.xl01.me/2.ts", "https://page/2"
-            ) == SegmentPayload(b"67890")
+            assert cache.cached("https://vod.xl01.me/1.ts", "https://page/1") is None
+            assert cache.cached("https://vod.xl01.me/2.ts", "https://page/2") == SegmentPayload(
+                b"67890"
+            )
 
     asyncio.run(scenario())
 
@@ -75,15 +72,11 @@ def test_prefetch_uses_extinf_window_and_caches_clean_ts() -> None:
             requested.append(request.url.path)
             return httpx.Response(
                 200,
-                stream=httpx.ByteStream(
-                    b"fake-prefix" + SEGMENT_PACKET * 4
-                ),
+                stream=httpx.ByteStream(b"fake-prefix" + SEGMENT_PACKET * 4),
                 request=request,
             )
 
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handler)
-        ) as client:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             cache = SegmentCache(
                 client,
                 segment_host="vod.xl01.me",

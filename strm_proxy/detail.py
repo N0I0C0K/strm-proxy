@@ -13,11 +13,8 @@ import httpx
 
 from .models import ResolverError
 
-
 _DETAIL_PATH_PATTERN = re.compile(r"^/([^/?#]+)/(\d+)\.htm$")
-_PLAY_PATH_PATTERN = re.compile(
-    r"^/(?:[^/?#]+/)?play/(\d+)-(\d+)\.htm$"
-)
+_PLAY_PATH_PATTERN = re.compile(r"^/(?:[^/?#]+/)?play/(\d+)-(\d+)\.htm$")
 _TITLE_YEAR_PATTERN = re.compile(r"\s*\(((?:19|20)\d{2})\)\s*$")
 _EPISODE_NUMBER_PATTERN = re.compile(r"(\d+)")
 _SEASON_PATTERN = re.compile(
@@ -34,7 +31,22 @@ _SERIES_CATEGORIES = {
     "taiju",
     "yingju",
 }
-_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+_VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +182,7 @@ def parse_xlys_detail(
     if not episodes:
         raise ResolverError("The xlys detail page did not contain valid play links")
     is_series = (
-        category in _SERIES_CATEGORIES
-        or len(episodes) > 1
-        or (declared_episode_count or 0) > 1
+        category in _SERIES_CATEGORIES or len(episodes) > 1 or (declared_episode_count or 0) > 1
     )
     return XlysDetail(
         xlys_id=xlys_id,
@@ -210,6 +220,7 @@ async def fetch_xlys_detail(
         raise ResolverError("请输入本站的 HTTPS 影片详情页网址")
 
     normalized_url = f"https://{parsed.hostname}{parsed.path}"
+    response: httpx.Response | None = None
     for attempt in range(3):
         response = await client.get(
             normalized_url,
@@ -218,6 +229,7 @@ async def fetch_xlys_detail(
         if response.status_code != 429 or attempt == 2:
             break
         await asyncio.sleep(1.5 * (attempt + 1))
+    assert response is not None
     response.raise_for_status()
     return parse_xlys_detail(
         response.text,

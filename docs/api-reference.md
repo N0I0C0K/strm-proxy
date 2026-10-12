@@ -27,7 +27,8 @@ http://127.0.0.1:8787
 | `STRM_PROXY_PROXY_SEGMENTS` | `true` |
 | `STRM_PROXY_UPSTREAM_PROXY` | 未设置；例如 `http://127.0.0.1:7890` |
 | `STRM_PROXY_PLAY_SELECTION_CACHE` | `true` |
-| `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` | `600` 秒 |
+| `STRM_PROXY_PLAY_SELECTION_TTL_SECONDS` | `7200` 秒（2 小时，仅自动选择） |
+| `STRM_PROXY_SEGMENT_PREFETCH_SECONDS` | `60` 秒 |
 | `STRM_PROXY_SEGMENT_CACHE_MAX_MB` | `128` MiB；`0` 表示关闭 |
 | `STRM_PROXY_LOG_LEVEL` | `INFO` |
 | `STRM_PROXY_LOG_FILE` | `data/strm-proxy.log`；空字符串表示关闭文件日志 |
@@ -38,7 +39,9 @@ http://127.0.0.1:8787
 
 两个 xlys 登录变量必须同时设置；其值对应站点实际使用的 `username`、`password` Cookie 值，而不是 WebDAV 账号。Cookie 按 xlys 域限定，不会发送给媒体 CDN。
 
-未设置 `STRM_PROXY_UPSTREAM_PROXY` 时，上游 HTTP 请求使用 HTTPX 默认的系统或环境代理配置。设置该变量后，所有服务端上游 HTTP 请求统一经过指定的 HTTP(S) 代理，包括来源页面和接口、HLS manifest、前台分片及后台预读。启动日志中的 `upstream_proxy=true|false` 仅表示是否指定了此覆盖值，不会记录代理地址或其中的认证信息。
+未设置 `STRM_PROXY_UPSTREAM_PROXY` 时，上游 HTTP 请求使用 HTTPX 默认的系统或环境代理配置。设置该变量后，XLYS 的服务端上游 HTTP 请求统一经过指定的 HTTP(S) 代理，包括来源页面和接口、HLS manifest、前台分片及后台预读。启动日志中的 `upstream_proxy=true|false` 仅表示是否指定了此覆盖值，不会记录代理地址或其中的认证信息。
+
+LIBVIO 的试验接入使用独立客户端：页面和解析请求默认直连，设置 `STRM_PROXY_UPSTREAM_PROXY` 后使用指定代理；视频探测始终直连，播放器通过 302 直接访问 HTTPS 视频 CDN。LIBVIO 客户端不继承系统或环境代理。
 
 默认监听 `0.0.0.0`，允许局域网设备访问。WebDAV 账号密码在首次建库时由环境变量初始化，此后保存在数据库中，可在管理页修改；环境变量的后续变化不会覆盖数据库凭据。建议修改默认账号密码。HTTP Basic 凭据应通过 HTTPS 或可信私有网络传输。当前播放 API 没有鉴权，不应直接无保护地暴露到公网。
 
@@ -64,9 +67,9 @@ http://127.0.0.1:8787
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `page_url` | string | 是 | — | xlys 播放页 HTTPS URL，应进行 URL 编码 |
+| `page_url` | string | 是 | — | xlys 播放页或 LIBVIO 详情/播放页 HTTPS URL，应进行 URL 编码 |
 
-`page_url` 只允许配置中的 xlys 域名，并且路径必须符合以下形式之一：
+xlys 的 `page_url` 只允许配置中的 xlys 域名，并且路径必须符合以下形式之一：
 
 ```text
 /play/<id>-<episode>.htm
@@ -104,13 +107,39 @@ GET /resolve?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
 
 `sources` 只表示 `/lines` 是否公布对应能力，不表示媒体 CDN 已经验证可用；`/play` 会在返回直连地址前做小型 Range 探测。HLS 线路数量就是 `lines` 数组长度：服务会拆分上游 HLS 字段中的逗号分隔 URL，过滤非 M3U8 项并按 URL 去重。`direct_lines` 单独报告 `url3` 直连线路的序号，不返回临时签名 URL。`lines[].index` 只是当前解析结果中的诊断信息，不是播放接口参数。`lines[].name` 来自 URL fragment（例如 `#iplay`）；fragment 不会发送给媒体 CDN，是持久化选择使用的稳定标识。没有 fragment 时该字段为 `null`。
 
+#### LIBVIO 试验接入
+
+`/resolve`、`/play`、`/strm` 支持 `https://www.libvio.lat/detail/<id>.html` 和 `https://www.libvio.lat/play/<id>-<sid>-<nid>.html`，也接受不带 `www` 的域名。详情页选择可用在线线路的第一集；播放页保留指定线路和集数。网盘下载线路会被跳过，路径中的公开媒体 ID 不会被播放器内部 ID 替换。
+
+LIBVIO 的 `/resolve` 返回 `provider: "libvio"`、`source: "direct"`、`title`、`play_page_url`、`public_media_id`、`route_name`、`episode_number`、`lookup_scheme` 和临时 `media_url`。它会先检查 MP4 数据是否可读。`/play` 仅支持 `source=auto`，返回不缓存的 302；`/strm` 保存稳定的 `/play?page_url=...`，每次播放都能重新取得临时签名地址。
+
+当前实现覆盖已验证的 ArtPlayer MP4 流程。解析结果最多缓存 60 秒，命中后会重新探测；失效时重新解析。SmartPlay 的固定 HTTPS 查询接口遇到 `WRONG_VERSION_NUMBER` 时，使用同一接口提供的 HTTP 地址兼容当前测试网络；不会因证书验证错误降级，页面和视频仍使用 HTTPS。解析参数是公开播放页的参数，不携带 XLYS 登录 Cookie。
+
+可通过以下入口试验：
+
+```text
+GET /strm?page_url=https%3A%2F%2Fwww.libvio.lat%2Fdetail%2F5813847.html
+```
+
+管理页“通过网址添加”及 `POST /api/admin/import` 支持 LIBVIO 详情页。导入后设为人工保留，电影显示在 WebDAV 的“电影”目录，电视剧按季度和分集显示；支持刷新信息、保留、隐藏和删除。“供应商同步”也会自动发现 LIBVIO 内容；人工保留的条目不会被轮换掉。LIBVIO 当前自动选择直连线路，管理页不提供人工固定线路。
+
+自动发现只读取分类及详情，跳过下载专用条目；视频是否可读在播放时检查。部分在线线路返回 HLS，当前 LIBVIO 播放适配仍仅支持前述 MP4 流程；例如抽查的《挽救计划》HD7 返回 HLS，暂不能通过本适配器播放。
+
+设置 `STRM_PROXY_PAGE_URL` 为该详情页、`STRM_PROXY_DAV_FILENAME` 为 `LIBVIO.strm` 后，兼容的单文件 WebDAV 入口 `/dav/LIBVIO.strm` 也可用于播放。
+
+独立验证工具使用内存数据库和临时本地服务，检查 WebDAV、STRM、302 跳转及视频头部、中部和尾部的 Range 响应；报告不包含临时签名 URL。可用 `--page-url` 重复指定详情页或分集页，`--lookup-proxy` 仅设置页面和解析代理，`--preview` 保持浏览器验证入口运行：
+
+```powershell
+uv run python scripts/verify_libvio_e2e.py --page-url https://www.libvio.lat/detail/5813847.html
+```
+
 ### 2.3 `GET` 或 `HEAD /play`
 
-稳定的协议无关播放入口。默认 `source=auto`：先查询持久化播放决策；命中人工固定的 `url3`、TOS 或命名 HLS 时优先使用该来源。未命中或缓存方向失效时，按 `TOS → member → 探测 HLS` 自动回退；`url3` 仅在管理页人工选择时使用。HLS 探测会解包 manifest，并以普通流式 GET 读取首个媒体资源的少量前缀；直连对象使用 `Range: bytes=0-63` 验证视频 Content-Type 或 MP4 `ftyp` 文件头。
+稳定的协议无关播放入口。默认 `source=auto`：先查询持久化播放决策；命中人工固定的 `url3`、TOS 或命名 HLS 时优先使用该来源。未命中或缓存方向失效时，TOS、member 和全部 HLS 候选并发探测，最先完成最多 512 KiB 媒体样本且格式有效的来源获胜；`url3` 仅在管理页人工选择时使用。HLS 会解包 manifest 并读取首个媒体资源，TOS 使用普通流式 GET 读取等大的样本，因此 TOS 与 HLS 参加同一次速度竞争。member 当前会因自动验证码识别尚未配置而退出竞争。
 
 同一 `page_url` 在一个服务进程内只会同时运行一个探索任务。并发请求共享结果；等待中的客户端超时或断开只会取消该客户端的等待，不会取消探索任务，成功结果仍会写入 SQLite 供客户端后续重试。
 
-`/lines.data.ptoken` 只表示页面公布了受验证码保护的会员线路，不是可直接提交的验证码。站点验证码是一道整数加、减、乘算术题，要求在同一会话中提交计算结果。当前版本尚未启用自动 OCR，也不提供人工预验证入口；`source=member` 会报告识别器未配置，`source=auto` 会继续回退 HLS。
+`/lines.data.ptoken` 只表示页面公布了受验证码保护的会员线路，不是可直接提交的验证码。站点验证码是一道整数加、减、乘算术题，要求在同一会话中提交计算结果。当前版本尚未启用自动 OCR，也不提供人工预验证入口；`source=member` 会报告识别器未配置，`source=auto` 中其他并发的 TOS/HLS 探测会继续进行。
 
 查询参数：
 
@@ -127,9 +156,9 @@ Cache-Control: no-store
 Location: https://.../video-object
 ```
 
-TOS 成功时，TV 直接访问媒体 CDN，视频数据不经过本服务。进入 HLS 探测后只读取各候选的 manifest 和首个媒体资源开头，不下载完整分片。登录 Cookie 只用于 xlys 播放页和 `/lines`，不会发送给媒体 CDN。`ptoken` 不会被当作验证码提交。
+TOS 成功时，TV 直接访问媒体 CDN，视频数据不经过本服务。自动探索只为每个候选读取最多 512 KiB 媒体样本，不下载完整视频；缓存命中的 TOS 仍只用 `Range: bytes=0-63` 做轻量可用性复核。登录 Cookie 只用于 xlys 播放页和 `/lines`，不会发送给媒体 CDN。`ptoken` 不会被当作验证码提交。
 
-播放决策保存在 SQLite 的通用 `cache_entries` 表中，服务重启后仍然有效。带名称的 HLS 缓存项以 `route_name` 为稳定身份；每次解析页面后再把它映射为当次数字 ID，因此上游调整 line 顺序、字段或 URL 后仍可复用。HLS 决策还包含持久化的 `revision`，并作为 `/hls.m3u8` 的 `v` 参数下发。重新选择线路或缓存失效后重新探索会生成新版本；仅把相同线路名映射到新的数字 ID 不会改版本。数字 line 只作为一次请求内部的临时索引。旧的无名称缓存继续按 line、候选类型和 URL 严格校验；旧版缓存缺少 revision 时会自动补齐并写回。线路消失、名称歧义或 manifest 获取失败时缓存自动删除。设置 `STRM_PROXY_PLAY_SELECTION_CACHE=false` 可以关闭持久化的成功/失败缓存，使每个请求都重新探索；视频级并发合并仍然生效，同时管理页也不能保存人工线路。
+播放决策保存在 SQLite 的通用 `cache_entries` 表中，服务重启后仍然有效。自动选择默认在 7200 秒后过期，下一次播放会重新测速；可通过 `STRM_PROXY_PLAY_SELECTION_TTL_SECONDS` 设置正数秒值。管理页人工固定的线路没有该有效期，直到用户恢复自动或来源失效。带名称的 HLS 缓存项以 `route_name` 为稳定身份；每次解析页面后再把它映射为当次数字 ID，因此上游调整 line 顺序、字段或 URL 后仍可复用。HLS 决策还包含持久化的 `revision`，并作为 `/hls.m3u8` 的 `v` 参数下发。重新选择线路或缓存失效后重新探索会生成新版本；仅把相同线路名映射到新的数字 ID 不会改版本。数字 line 只作为一次请求内部的临时索引。旧的无名称缓存继续按 line、候选类型和 URL 严格校验；旧版缓存缺少 revision 或过期时间时会自动补齐并写回。线路消失、名称歧义或 manifest 获取失败时缓存自动删除。设置 `STRM_PROXY_PLAY_SELECTION_CACHE=false` 可以关闭持久化的成功/失败缓存，使每个请求都重新探索；视频级并发合并仍然生效，同时管理页也不能保存人工线路。
 
 如果页面公布的所有来源都失败，响应为 `503 Service Unavailable`，并包含 `Retry-After: 30` 与 `X-STRM-Proxy-Error: no-playable-source`。JSON 的 `detail.errors` 会列出 TOS、member 和 HLS 的失败原因，便于非播放器客户端诊断。相同页面的失败结果缓存 30 秒，期间重试直接返回相同的 `503`；本服务不生成错误视频。
 
@@ -163,7 +192,7 @@ Location: /hls.m3u8?page_url=...&v=<current>
 | `true` | `http(s)://本服务/segment?...` | TV → 本服务 → 上游 CDN | 兼容性高，全部视频流量经过本服务 |
 | `false` | `https://vod.xl01.me/...ts` | TV → 上游 CDN | 本服务流量很小；自动选线优先原生分片，全部线路均有包装时仍取决于播放器兼容性 |
 
-未命中缓存时，HLS 选线由分片传输模式自动决定。`STRM_PROXY_PROXY_SEGMENTS=true` 时，包装线路和原生线路都能由服务端处理，选择首个探测成功的健康线路；设为 `false` 时，服务优先选择 MPEG-TS 从第 0 字节开始或标准 fMP4 的原生线路，全部健康线路均为图片包装时才回退到包装线路。需要人工固定线路时使用管理页按 `route_name` 保存，而不是把数字 line 写入播放 URL。
+未命中缓存时，各 HLS 线路会并发读取首个媒体资源的固定 512 KiB 样本。`STRM_PROXY_PROXY_SEGMENTS=true` 时，包装线路和原生线路都能由服务端处理，样本最先完成且健康的线路获胜；设为 `false` 时，服务优先选择 MPEG-TS 从第 0 字节开始或标准 fMP4 的原生线路，全部健康线路均为图片包装时才回退到包装线路。HLS 的优胜者还会与并发的 TOS 样本比较。需要人工固定线路时使用管理页按 `route_name` 保存，而不是把数字 line 写入播放 URL。
 
 这些配置在服务启动时读取，修改后必须重启。旧客户端 URL 中即使仍有 `proxy_segments=true|false`，也会被当作未知查询参数忽略。`STRM_PROXY_PROXY_SEGMENTS=false` 只让 TS 分片直连；M3U8 仍由本服务获取、解包并返回，因为上游原始 M3U8 不是标准明文清单。
 
@@ -267,7 +296,9 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 
 | 字段 | 类型 | 可空 | 说明 |
 | --- | --- | --- | --- |
-| `xlys_id` | integer | 否 | 媒体在来源站点的 ID |
+| `xlys_id` | integer | 否 | 兼容字段：管理 API 使用的内部媒体 ID；已有 XLYS ID 保持原值，其他供应商使用独立的负数 ID |
+| `provider` | enum | 否 | `xlys` 或 `libvio` |
+| `source_media_id` | string | 否 | 供应商实际媒体 ID；与内部 ID 分开保存 |
 | `title` | string | 否 | 标题 |
 | `year` | integer | 是 | 年份 |
 | `cover_url` | string | 是 | 封面地址 |
@@ -303,12 +334,20 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
     "series": 0
   },
   "recent_limit": 50,
-  "recently_watched_series_count": 0
+  "recently_watched_series_count": 0,
+  "recently_watched_series": [],
+  "discovery_failures": [],
+  "provider_syncs": [
+    {"provider": "libvio", "status": "idle", "last_synced_at": null, "failures": []},
+    {"provider": "xlys", "status": "idle", "last_synced_at": null, "failures": []}
+  ]
 }
 ```
 
 `movies` 字段同样是历史名称，数组中可能包含 `kind=series` 的电视剧。
 `recently_watched_series_count` 是近 30 天通过 `/play` 播放过的已入库电视剧数量。
+
+`provider_syncs` 分别显示已启用供应商的同步状态：`idle`、`syncing`、`success`、`partial` 或 `failed`。`last_synced_at` 是最近一次完成尝试的时间（成功或失败），`failures` 是该供应商的失败说明。已完成的结果存入 SQLite，重启后保留；正在同步的临时状态不持久化。
 
 ### 3.3 `GET /api/admin/media`
 
@@ -380,19 +419,22 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 
 请求体：无。
 
+可选查询参数 `provider=libvio` 或 `provider=xlys` 表示只同步该供应商，其他供应商不会被请求、更新或清理。省略时同步所有启用的供应商，兼容原有调用。供应商之间使用独立锁，网站关闭或请求等待不会阻塞其他供应商的单独同步。
+
 同步行为：
 
-1. 抓取电影和电视剧最近更新集合；
-2. 抓取最近年份的评分集合；
-3. 合并、去重并补抓必要的电视剧详情；
-4. 替换不再出现在发现集合中的 `auto` 记录；
-5. 保留 `keep` 和 `hidden` 记录。
+1. 分别从 XLYS 和 LIBVIO 抓取电影、电视剧的最近更新集合（默认各 50 条）；
+2. 抓取近 4 年的评分集合，电影评分严格大于 7，电视剧严格大于 8；
+3. 按供应商和来源 ID 合并、去重并补抓详情；LIBVIO 跳过仅有网盘下载的影片；
+4. 按供应商及媒体类型替换不再出现在完整发现集合中的 `auto` 记录；
+5. 保留 `keep`、`hidden` 和近 30 天看过的电视剧；
+6. 某个供应商分类抓取失败时保留其原有片库，其他分类继续同步。LIBVIO 部分详情失败时更新成功条目，但不移除该类型的旧条目；空结果也不会清空片库。
 
-该请求需要访问上游，可能持续较长时间。响应类型为同步后的 `MovieCatalog`。
+该请求需要访问上游，可能持续较长时间。响应类型为同步后的 `MovieCatalog`，`discovery_failures: string[]` 仅列出本次所选供应商未完成的部分；为空表示本次发现完整完成。所选供应商分类全部失败时返回 `502`；其结果仍可通过 `GET /api/admin/media` 的 `provider_syncs` 查看，既有片库保留。
 
 ### 3.8 `POST /api/admin/import`
 
-从一个 xlys 详情页手动导入电影或电视剧，并将策略设置为 `keep`。
+从一个 XLYS 或 LIBVIO 详情页手动导入电影或电视剧，并将策略设置为 `keep`。LIBVIO 的输入格式为 `https://www.libvio.lat/detail/<id>.html`；导入时跳过网盘下载线路。重复添加同一供应商、同一来源 ID 会更新既有条目，不会重复建库，也不会与其他供应商的相同 ID 相互覆盖。
 
 请求体：
 
@@ -413,6 +455,8 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 | `kind` | `movie` 或 `series` | 识别出的媒体类型 |
 | `imported` | boolean | 是否完成导入 |
 | `xlys_id` | integer | 媒体 ID |
+| `provider` | enum | `xlys` 或 `libvio` |
+| `source_media_id` | string/null | 来源 ID；LIBVIO 始终返回该字段 |
 | `title` | string | 标题 |
 | `year` | integer/null | 年份 |
 | `cover_url` | string/null | 封面 URL |
@@ -432,6 +476,8 @@ curl -u demo:demo http://127.0.0.1:8787/api/admin/media
 ### 3.10 播放线路管理
 
 这组接口供管理页实时查看并人工固定播放来源。电影按播放页保存；电视剧按剧集 ID 保存一个选择，已收录和后来新增的分集都会重新获取该集的对应来源。HLS 按名称匹配，`url3` 直连按序号匹配，TOS 每集重新获取。某集缺少所选来源时，该集恢复自动探索。会员入口会显示，但因站点验证码要求而不能固定。
+
+人工线路管理当前仅支持 XLYS。LIBVIO 自动选择可读的直连视频，相关人工线路接口返回 `400`；其管理页详情显示“自动选择直连线路”。
 
 #### `GET /api/admin/media/{xlys_id}/playback-routes`
 
@@ -476,7 +522,7 @@ HLS 没有线路名时 `name=null` 且 `selectable=false`。`url3` 只能按站�
 
 #### `DELETE /api/admin/media/{xlys_id}/playback-routes`
 
-电影清除该播放页的成功选择和短期失败缓存；电视剧清除整部剧的固定线路以及已收录分集的播放决策缓存。下一次 `/play?source=auto` 会重新执行 `TOS → member → HLS` 探索。这个操作只访问本地 SQLite，不等待上游。
+电影清除该播放页的成功选择和短期失败缓存；电视剧清除整部剧的固定线路以及已收录分集的播放决策缓存。下一次 `/play?source=auto` 会重新并发测速 TOS、member 和 HLS。这个操作只访问本地 SQLite，不等待上游。
 
 ```json
 {
@@ -623,7 +669,7 @@ WebDAV 生成的 STRM 省略 `source`，且播放链路不再接受 line：
 | 自动播放失败 | SQLite 30 秒缓存 | 保存各来源错误，抑制播放器短时间内的重复探索；可关闭 |
 | 资源发现结果 | 1800 秒内存缓存 | 电影和电视剧分别缓存 |
 | SQLite 媒体目录 | 持久化 | 服务重启后仍存在 |
-| TS 分片 | 最多 128 MiB 内存 LRU | 代理模式下缓存清洗后的完整 TS，并从当前分片向后预读约 600 秒 |
+| TS 分片 | 最多 128 MiB 内存 LRU | 代理模式下缓存清洗后的完整 TS，并从当前分片向后预读约 60 秒 |
 
 即使原始 M3U8 命中缓存，服务仍会根据本次请求的 Host 和协议重新生成 `/segment` 地址，因此不同访问地址不会互相污染缓存。
 

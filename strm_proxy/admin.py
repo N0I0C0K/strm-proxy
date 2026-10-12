@@ -13,7 +13,8 @@ from .catalog import CatalogEntry, movie_filename
 from .database import MediaItem, MediaRepository, MediaType, MoviePolicy
 from .dependencies import (
     AdminAuthDep,
-    HttpClientDep,
+    ControlHttpClientDep,
+    LibvioResolverDep,
     MediaLibraryDep,
     MediaRepositoryDep,
     PlaybackCoordinatorDep,
@@ -22,16 +23,18 @@ from .dependencies import (
 )
 from .detail import fetch_xlys_detail
 from .library import MediaLibrary
+from .libvio import LibvioResolver, is_libvio_url
 from .logging_utils import describe_http_error
 from .models import ResolvedPage, ResolverError
 from .playback_selection import PlaybackCoordinator, PlaybackSelection
-
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 class MovieItem(BaseModel):
     xlys_id: int
+    provider: Literal["xlys", "libvio"]
+    source_media_id: str
     title: str
     year: int | None
     cover_url: str | None
@@ -68,12 +71,21 @@ class MovieCounts(BaseModel):
     series: int
 
 
+class ProviderSyncItem(BaseModel):
+    provider: Literal["xlys", "libvio"]
+    status: Literal["idle", "syncing", "success", "partial", "failed"]
+    last_synced_at: datetime | None
+    failures: list[str]
+
+
 class MovieCatalog(BaseModel):
     movies: list[MovieItem]
     counts: MovieCounts
     recent_limit: int
     recently_watched_series_count: int
     recently_watched_series: list[str]
+    discovery_failures: list[str] = Field(default_factory=list)
+    provider_syncs: list[ProviderSyncItem] = Field(default_factory=list)
 
 
 class RefreshItem(BaseModel):
@@ -123,6 +135,8 @@ class ManualImportResult(BaseModel):
     kind: Literal["movie", "series"]
     imported: bool
     xlys_id: int
+    provider: Literal["xlys", "libvio"] = "xlys"
+    source_media_id: str | None = None
     title: str
     year: int | None
     cover_url: str | None
@@ -184,9 +198,7 @@ def update_credentials(
     _auth: AdminAuthDep,
     repository: MediaRepositoryDep,
 ) -> CredentialsView:
-    if not repository.change_credentials(
-        update.current_password, update.username, update.password
-    ):
+    if not repository.change_credentials(update.current_password, update.username, update.password):
         raise HTTPException(status_code=403, detail="当前密码不正确")
     return CredentialsView(username=update.username)
 
@@ -211,8 +223,7 @@ async def get_media_detail(
 ) -> MediaDetail:
     media = _require_media(repository, xlys_id)
     episodes = (
-        repository.list_episodes(xlys_id)
-        if media.media_type == MediaType.SERIES.value else ()
+        repository.list_episodes(xlys_id) if media.media_type == MediaType.SERIES.value else ()
     )
     return MediaDetail(
         **_movie_item(media, library, len(episodes)).model_dump(),
@@ -282,15 +293,17 @@ async def sync_movies(
     _auth: AdminAuthDep,
     repository: MediaRepositoryDep,
     library: MediaLibraryDep,
+    provider: Literal["xlys", "libvio"] | None = None,
 ) -> MovieCatalog:
-    await library.sync_from_source()
+    await library.sync_from_source(provider=provider)
     return _catalog(repository.list_media(), library)
 
 
 @router.post("/media/refresh-recent-series", response_model=RecentRefreshResult)
 async def refresh_recent_series(
     _auth: AdminAuthDep,
-    http: HttpClientDep,
+    http: ControlHttpClientDep,
+    libvio: LibvioResolverDep,
     settings: SettingsDep,
     repository: MediaRepositoryDep,
     library: MediaLibraryDep,
@@ -302,7 +315,7 @@ async def refresh_recent_series(
         async with semaphore:
             try:
                 return await _refresh_media(
-                    media, http, settings.allowed_page_hosts, repository
+                    media, http, settings.allowed_page_hosts, repository, libvio
                 )
             except (HTTPException, httpx.HTTPError, ResolverError, ValueError) as exc:
                 return RefreshFailure(
@@ -326,13 +339,14 @@ async def refresh_recent_series(
 async def refresh_media(
     xlys_id: int,
     _auth: AdminAuthDep,
-    http: HttpClientDep,
+    http: ControlHttpClientDep,
+    libvio: LibvioResolverDep,
     settings: SettingsDep,
     repository: MediaRepositoryDep,
     library: MediaLibraryDep,
 ) -> RefreshResult:
     media = _require_media(repository, xlys_id)
-    item = await _refresh_media(media, http, settings.allowed_page_hosts, repository)
+    item = await _refresh_media(media, http, settings.allowed_page_hosts, repository, libvio)
     return RefreshResult(item=item, catalog=_catalog(repository.list_media(), library))
 
 
@@ -349,6 +363,7 @@ async def get_playback_routes(
     playback: PlaybackCoordinatorDep,
 ) -> PlaybackRoutes:
     media = _require_media(repository, xlys_id)
+    _require_xlys_playback_routes(media)
     page_url = _media_play_page_url(media, repository, library)
     resolved = await resolver.resolve_page(page_url, refresh=True)
     return _playback_routes(media, resolved, playback)
@@ -373,10 +388,12 @@ async def set_playback_route(
             detail="Playback selection cache is disabled",
         )
     media = _require_media(repository, xlys_id)
+    _require_xlys_playback_routes(media)
     page_url = _media_play_page_url(media, repository, library)
     resolved = await resolver.resolve_page(page_url)
     key = update.route_name
     direct_line: int | None = None
+    hls_line: int | None = None
     if key == "source:tos":
         if not resolved.tos_available:
             raise HTTPException(status_code=404, detail="TOS route is not available")
@@ -393,8 +410,7 @@ async def set_playback_route(
         matches = [
             index
             for index, candidate in enumerate(resolved.candidates)
-            if candidate.route_name is not None
-            and candidate.route_name.casefold() == wanted
+            if candidate.route_name is not None and candidate.route_name.casefold() == wanted
         ]
         if not matches:
             raise HTTPException(
@@ -406,7 +422,10 @@ async def set_playback_route(
                 status_code=409,
                 detail=f"Playback route {key!r} is ambiguous",
             )
-        key = resolved.candidates[matches[0]].route_name
+        hls_line = matches[0]
+        route_name = resolved.candidates[hls_line].route_name
+        assert route_name is not None
+        key = route_name
     if media.media_type == MediaType.SERIES.value:
         playback.cache.remember_series_route(
             media.xlys_id,
@@ -418,9 +437,10 @@ async def set_playback_route(
     elif direct_line is not None:
         playback.cache.remember_manual_direct(resolved, "url3", direct_line)
     else:
+        assert hls_line is not None
         playback.cache.remember_hls(
             resolved,
-            matches[0],
+            hls_line,
             manual_override=True,
         )
     return _playback_routes(media, resolved, playback)
@@ -443,6 +463,7 @@ async def clear_playback_route(
             detail="Playback selection cache is disabled",
         )
     media = _require_media(repository, xlys_id)
+    _require_xlys_playback_routes(media)
     page_url = _media_play_page_url(media, repository, library)
     if media.media_type == MediaType.SERIES.value:
         playback.cache.clear_series_route(
@@ -457,26 +478,35 @@ async def clear_playback_route(
 async def import_from_url(
     request: ManualImportRequest,
     _auth: AdminAuthDep,
-    http: HttpClientDep,
+    http: ControlHttpClientDep,
+    libvio: LibvioResolverDep,
     settings: SettingsDep,
     repository: MediaRepositoryDep,
     library: MediaLibraryDep,
 ) -> ManualImportResult:
+    if is_libvio_url(request.url):
+        detail = await libvio.fetch_detail(request.url)
+        media = repository.import_libvio_detail(detail)
+        return ManualImportResult(
+            kind=detail.kind,
+            imported=True,
+            xlys_id=media.xlys_id,
+            provider="libvio",
+            source_media_id=detail.public_media_id,
+            title=detail.title,
+            year=detail.year,
+            cover_url=detail.cover_url,
+            available_episode_count=len(detail.episodes) if detail.kind == "series" else 0,
+            declared_episode_count=detail.declared_episode_count,
+            source_url=detail.source_url,
+            message="LIBVIO 影片已添加，并设为人工保留。",
+            catalog=_catalog(repository.list_media(), library),
+        )
     detail = await fetch_xlys_detail(
         http,
         request.url,
         allowed_hosts=settings.allowed_page_hosts,
     )
-    common = {
-        "kind": detail.kind,
-        "xlys_id": detail.xlys_id,
-        "title": detail.title,
-        "year": detail.year,
-        "cover_url": detail.cover_url,
-        "available_episode_count": len(detail.episodes),
-        "declared_episode_count": detail.declared_episode_count,
-        "source_url": detail.source_url,
-    }
     if detail.kind == "series":
         repository.import_discovered_series(
             (
@@ -494,7 +524,14 @@ async def import_from_url(
         )
         repository.set_series_policy(detail.xlys_id, MoviePolicy.KEEP)
         return ManualImportResult(
-            **common,
+            kind=detail.kind,
+            xlys_id=detail.xlys_id,
+            title=detail.title,
+            year=detail.year,
+            cover_url=detail.cover_url,
+            available_episode_count=len(detail.episodes),
+            declared_episode_count=detail.declared_episode_count,
+            source_url=detail.source_url,
             imported=True,
             message="电视剧及当前分集已添加，并设为人工保留。",
             catalog=_catalog(repository.list_media(), library),
@@ -515,7 +552,14 @@ async def import_from_url(
     )
     repository.set_movie_policy(detail.xlys_id, MoviePolicy.KEEP)
     return ManualImportResult(
-        **common,
+        kind=detail.kind,
+        xlys_id=detail.xlys_id,
+        title=detail.title,
+        year=detail.year,
+        cover_url=detail.cover_url,
+        available_episode_count=len(detail.episodes),
+        declared_episode_count=detail.declared_episode_count,
+        source_url=detail.source_url,
         imported=True,
         message="影片已添加，并设为人工保留。",
         catalog=_catalog(repository.list_media(), library),
@@ -534,11 +578,24 @@ def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatal
         series=sum(movie.media_type == MediaType.SERIES.value for movie in movies),
     )
     return MovieCatalog(
-        movies=[_movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies],
+        movies=[
+            _movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies
+        ],
         counts=counts,
         recent_limit=library.recent_limit,
         recently_watched_series_count=len(recently_watched_series),
         recently_watched_series=[series.title for series in recently_watched_series],
+        discovery_failures=list(library.last_discovery_failures),
+        provider_syncs=[
+            ProviderSyncItem(
+                provider=provider,
+                status=state.status,
+                last_synced_at=state.last_synced_at,
+                failures=list(state.failures),
+            )
+            for provider, state in library.provider_sync_states.items()
+            if provider == "xlys" or library.libvio_catalog is not None
+        ],
     )
 
 
@@ -547,12 +604,28 @@ async def _refresh_media(
     http: httpx.AsyncClient,
     allowed_hosts: tuple[str, ...],
     repository: MediaRepository,
+    libvio: LibvioResolver | None = None,
 ) -> RefreshItem:
     if not media.source_url:
         raise HTTPException(status_code=409, detail="该影片没有详情页地址，无法刷新")
-    detail = await fetch_xlys_detail(
-        http, media.source_url, allowed_hosts=allowed_hosts
-    )
+    if media.provider == "libvio":
+        if libvio is None:
+            raise HTTPException(status_code=503, detail="LIBVIO resolver is unavailable")
+        detail = await libvio.fetch_detail(media.source_url, kind_hint=media.media_type)
+        if detail.public_media_id != media.source_media_id or detail.kind != media.media_type:
+            raise HTTPException(status_code=409, detail="详情页与现有影片不匹配")
+        before = {episode.source_index for episode in repository.list_episodes(media.xlys_id)}
+        repository.import_libvio_detail(detail, keep=False)
+        return RefreshItem(
+            xlys_id=media.xlys_id,
+            title=detail.title,
+            kind=detail.kind,
+            added_episodes=len({episode.source_index for episode in detail.episodes} - before)
+            if detail.kind == "series"
+            else 0,
+            available_episode_count=len(detail.episodes) if detail.kind == "series" else 0,
+        )
+    detail = await fetch_xlys_detail(http, media.source_url, allowed_hosts=allowed_hosts)
     if detail.xlys_id != media.xlys_id or detail.kind != media.media_type:
         raise HTTPException(status_code=409, detail="详情页与现有影片不匹配")
     added = repository.refresh_media_from_detail(detail)
@@ -563,7 +636,8 @@ async def _refresh_media(
         added_episodes=added,
         available_episode_count=(
             len(repository.list_episodes(media.xlys_id))
-            if detail.kind == MediaType.SERIES.value else 0
+            if detail.kind == MediaType.SERIES.value
+            else 0
         ),
     )
 
@@ -581,6 +655,11 @@ def _require_media(repository: MediaRepository, xlys_id: int) -> MediaItem:
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return media
+
+
+def _require_xlys_playback_routes(media: MediaItem) -> None:
+    if media.provider != "xlys":
+        raise HTTPException(status_code=400, detail="LIBVIO 当前自动选择可用直连线路")
 
 
 def _media_play_page_url(
@@ -618,13 +697,9 @@ def _playback_routes(
         media_kind=media.media_type,
         cache_enabled=playback.cache.enabled,
         cached_source=selection.source if selection is not None else None,
-        manual_override=(
-            selection.manual_override if selection is not None else False
-        ),
+        manual_override=(selection.manual_override if selection is not None else False),
         selected_line=(
-            selection.line
-            if selection is not None and selection.source == "hls"
-            else None
+            selection.line if selection is not None and selection.source == "hls" else None
         ),
         selected_route_name=_selected_route_name(selection),
         selected_route_key=_selected_route_key(selection),
@@ -645,27 +720,41 @@ def _route_options(resolved: ResolvedPage) -> list[PlaybackRouteOption]:
             name=candidate.route_name,
             kind=candidate.kind,
             selectable=(
-                candidate.route_name is not None
-                and counts[candidate.route_name.casefold()] == 1
+                candidate.route_name is not None and counts[candidate.route_name.casefold()] == 1
             ),
         )
         for index, candidate in enumerate(resolved.candidates)
     ]
     for index, _candidate in enumerate(resolved.direct_candidates):
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key=f"url3:{index}",
-            name=f"直连线路 {index + 1}", kind="url3", selectable=True,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key=f"url3:{index}",
+                name=f"直连线路 {index + 1}",
+                kind="url3",
+                selectable=True,
+            )
+        )
     if resolved.tos_available:
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key="source:tos",
-            name="TOS 直连", kind="tos", selectable=True,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key="source:tos",
+                name="TOS 直连",
+                kind="tos",
+                selectable=True,
+            )
+        )
     if resolved.member_token is not None:
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key="source:member",
-            name="会员线路", kind="member", selectable=False,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key="source:member",
+                name="会员线路",
+                kind="member",
+                selectable=False,
+            )
+        )
     return routes
 
 
@@ -700,6 +789,8 @@ def _movie_item(
 ) -> MovieItem:
     return MovieItem(
         xlys_id=movie.xlys_id,
+        provider=movie.provider,
+        source_media_id=movie.source_media_id or str(movie.xlys_id),
         title=movie.title,
         year=movie.year,
         cover_url=movie.cover_url,

@@ -49,9 +49,7 @@ def test_parse_catalog_page_reads_rating_and_source_url() -> None:
     assert entries[0].douban_rating == 8.6
     assert entries[0].cover_url == "https://img.example/27078.jpg"
     assert entries[0].source_updated_on == "2026-08-28"
-    assert entries[0].source_url == (
-        "https://www.xlys02.com/juqing/27078.htm"
-    )
+    assert entries[0].source_url == ("https://www.xlys02.com/juqing/27078.htm")
 
 
 def test_parse_catalog_page_reads_available_and_complete_episode_counts() -> None:
@@ -78,11 +76,7 @@ def test_discovery_unions_four_years_above_seven_with_recent_fifty() -> None:
         order = int(request.url.params["order"])
         year_value = request.url.params.get("year")
         year = int(year_value) if year_value is not None else None
-        page = (
-            1
-            if request.url.path == "/s/all"
-            else int(request.url.path.rsplit("/", 1)[1])
-        )
+        page = 1 if request.url.path == "/s/all" else int(request.url.path.rsplit("/", 1)[1])
         calls[(media_type, order, year, page)] += 1
         if order == 0:
             return httpx.Response(

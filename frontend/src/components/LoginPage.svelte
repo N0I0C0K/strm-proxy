@@ -20,15 +20,30 @@
   </section>
 
   <section class="login-panel">
-    <form class="login-card" onsubmit={(event) => { event.preventDefault(); onLogin(username, password) }}>
+    <form
+      class="login-card"
+      onsubmit={(event) => {
+        event.preventDefault()
+        onLogin(username, password)
+      }}
+    >
       <div class="login-icon"><KeyRound size={22} /></div>
       <div>
         <p class="eyebrow">管理入口</p>
         <h2>登录片库</h2>
         <p class="muted">使用 WebDAV 的用户名和密码。</p>
       </div>
-      <label><span>用户名</span><input bind:value={username} autocomplete="username" required /></label>
-      <label><span>密码</span><input bind:value={password} type="password" autocomplete="current-password" required /></label>
+      <label
+        ><span>用户名</span><input bind:value={username} autocomplete="username" required /></label
+      >
+      <label
+        ><span>密码</span><input
+          bind:value={password}
+          type="password"
+          autocomplete="current-password"
+          required
+        /></label
+      >
       {#if error}<p class="form-error" role="alert">{error}</p>{/if}
       <Button.Root class="primary-button" type="submit" disabled={loading}>
         {#if loading}<LoaderCircle class="spin" size={18} />{/if}

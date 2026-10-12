@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import unquote
+
+type Provider = Literal["xlys", "libvio"]
+type MediaKind = Literal["movie", "series"]
 
 
 class ResolverError(RuntimeError):

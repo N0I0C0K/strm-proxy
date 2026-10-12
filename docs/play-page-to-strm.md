@@ -16,7 +16,7 @@ https://www.xlys02.com/play/27062-0.htm
 http://192.168.1.11:8787/play?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F27062-0.htm
 ```
 
-爆米花请求这个 URL 时，服务使用默认 `source=auto`。请求先经过独立的播放决策缓存层：命中最近验证成功的 source 或命名 HLS 路线时直接复用，不再探索其他路径；未命中或缓存失效时固定按 `TOS → member → 探测 HLS` 回退。缓存由 `STRM_PROXY_PLAY_SELECTION_CACHE` 控制且默认开启，持久化在 SQLite 的通用 `cache_entries` 表中。线路名称与当次数字 ID 的映射完全留在服务端，任何 line 都不会固化进 WebDAV 的 `.strm` 或重定向 URL；HLS 重定向只携带服务端生成的 `v` 版本号。
+爆米花请求这个 URL 时，服务使用默认 `source=auto`。请求先经过独立的播放决策缓存层：命中未过期的自动选择或人工固定路线时直接复用，不再探索其他路径；未命中或缓存失效时并发测速 TOS、member 和全部 HLS。自动结果默认缓存 2 小时，由 `STRM_PROXY_PLAY_SELECTION_TTL_SECONDS` 配置；人工固定不自动过期。缓存由 `STRM_PROXY_PLAY_SELECTION_CACHE` 控制且默认开启，持久化在 SQLite 的通用 `cache_entries` 表中。线路名称与当次数字 ID 的映射完全留在服务端，任何 line 都不会固化进 WebDAV 的 `.strm` 或重定向 URL；HLS 重定向只携带服务端生成的 `v` 版本号。
 
 完整数据流如下：
 
@@ -27,7 +27,7 @@ http://192.168.1.11:8787/play?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F270
   -> GET 播放页面，提取 pid
   -> 计算动态签名，请求 /lines
   -> 查询播放决策缓存；命名 HLS 路线映射到当次内部 line
-  -> 未命中时，按 TOS、member、探测 HLS 依次回退
+  -> 未命中时，并发测速 TOS、member 和全部 HLS
   -> 相同播放页的并发请求共享一个探索任务
   -> 验证成功后写入播放决策缓存
   -> 全部失败时缓存 30 秒并返回带 Retry-After 的 503
@@ -38,7 +38,7 @@ http://192.168.1.11:8787/play?page_url=https%3A%2F%2Fwww.xlys02.com%2Fplay%2F270
   -> HLS 根据全局配置决定直连 TS 或通过 /segment 解包
 ```
 
-member 的 `ptoken` 只是线路存在标志。站点实际要求识别一张算术验证码，并在同一会话中把计算结果提交到 `/god/{pid}`。当前版本尚未启用自动 OCR，也不提供人工预验证入口；member 会报告未配置，`source=auto` 随后回退到 HLS。
+member 的 `ptoken` 只是线路存在标志。站点实际要求识别一张算术验证码，并在同一会话中把计算结果提交到 `/god/{pid}`。当前版本尚未启用自动 OCR，也不提供人工预验证入口；member 探测会报告未配置，其他并发的 TOS/HLS 探测继续进行。
 
 ## 1. 从播放页面提取标识
 
@@ -125,7 +125,7 @@ data.url3
 
 HLS 线路数量不是配置值，而是上述拆分、过滤和去重后的候选数量，即 `len(resolved.candidates)`，也就是 `/resolve` 响应中 `lines` 数组的长度。解析器会读取已知 HLS 字段以及上游新增的编号 HLS 字段；`url3` 直连、TOS 和会员入口单独计数。例如 `/play/27051-0.htm` 曾返回 4 条 HLS、3 条 `url3`、1 条 TOS 和 1 条会员入口，总共 9 个播放来源。候选 URL 末尾可能有 `#maliva`、`#ac5634-us`、`#iplay` 等 fragment；fragment 不会发送给 HTTP 服务器，但实现会保留它作为站点线路标签和稳定线路名。管理页可实时读取这些来源并人工覆盖电影或整部电视剧的播放决策；HLS 缓存命中时按名称在当前候选中重新定位，而不是假设原 line 索引永久不变。
 
-`source=auto` 会先依次验证 TOS 和 member；均不可用时并行探测 HLS 候选线路，每条线路解包 manifest，并以普通流式 GET 读取首个实际媒体资源的少量前缀，任一符合当前传输模式的健康线路先完成即可结束自动选择。这里不使用 Range，因为该分片 CDN 对小 Range 请求反而可能产生显著延迟。播放 API 不接受客户端指定 line；人工选择通过管理页按线路名称写入服务端缓存。
+`source=auto` 会并发探测 TOS、member 和全部 HLS 候选。每条 HLS 解包 manifest 后，以普通流式 GET 读取首个实际媒体资源最多 512 KiB；TOS 对直连 MP4 使用普通流式 GET 读取同样大小的样本。最先完成样本且格式有效的来源获胜，因此 TOS 与 HLS 会直接比较启动和传输速度。自动测速不使用 Range，以避免 CDN 对小 Range 请求产生额外延迟。播放 API 不接受客户端指定 line；人工选择通过管理页按线路名称写入服务端缓存。
 
 `data.ptoken` 只是会员线路存在标志，不是验证码。网页选择会员线路时会请求 `/play/verifyCode`，显示一张整数加、减、乘算术题，再将用户计算的结果提交给 `/god/{pid}`。当前服务不会把 `ptoken` 作为 `verifyCode`，自动 OCR 仍在验证阶段。
 
@@ -138,7 +138,7 @@ Invoke-RestMethod "http://127.0.0.1:8787/resolve?page_url=$page"
 
 ## 4. TOS `/god` 如何变成直连 MP4
 
-TOS 线路不是 M3U8。服务使用与 `/lines` 相同的时间戳签名向 `/god/{pid}?type=1` 发起 POST，并提交网页播放器固定使用的 `verifyCode=888`，取得 JSON 中的对象 URL，再复现网页播放器的 TOS CDN 域名改写。返回给 TV 前会发出一个 `Range: bytes=0-63` 探测请求；只有响应为 `200/206`，并且 Content-Type 是视频或文件头包含 MP4 `ftyp` 时才接受。会员 `/god/{pid}` 使用算术图片验证码而不是 `ptoken`，当前尚未进入自动选择。
+TOS 线路不是 M3U8。服务使用与 `/lines` 相同的时间戳签名向 `/god/{pid}?type=1` 发起 POST，并提交网页播放器固定使用的 `verifyCode=888`，取得 JSON 中的对象 URL，再复现网页播放器的 TOS CDN 域名改写。自动探索时通过普通流式 GET 读取最多 512 KiB 与 HLS 测速；缓存复用或显式请求时只读取 `Range: bytes=0-63` 复核可用性。只有响应为 `200/206`，并且 Content-Type 是视频或文件头包含 MP4 `ftyp` 时才接受。会员 `/god/{pid}` 使用算术图片验证码而不是 `ptoken`，当前会因识别器未配置而退出并发竞争。
 
 当前样本 `24406` 的实测结果为 `206 Partial Content`、`Content-Type: video/mp4`，文件头是 `ftypisom`。不带 Cookie、Referer以及使用普通 TV User-Agent 的 Range 请求均可成功，因此 `/play` 只需返回 `302`，视频数据不经过本服务。
 
@@ -186,11 +186,11 @@ http://<本机>:8787/segment?url=<上游TS地址>&referer=<播放页>&playlist=<
 
 `/segment` 只允许访问配置中的分片域名，避免成为任意 URL 代理。读取上游响应后，它会寻找 MPEG-TS 的同步位置：连续三个 `0x47` 同步字节之间必须各相隔 `188` 字节。找到后丢弃前面的包装数据，从第一个 TS 包开始流式返回，响应类型为 `video/mp2t`。
 
-代理清单还会为每个 TS 附加 HLS revision、内部播放列表标识和分片索引。TV 请求第 N 段后，服务根据 `EXTINF` 从 N+1 开始以最多 2 路并发预读约 600 秒。若 TV 仍拿着旧 playlist 的分片队列，服务会以 `302` 将旧请求重定向到当前 playlist 相同 index 的分片，阻止旧线路继续进入代理。前台未命中的第 N 段仍然边下载边返回，不等待完整分片；传输完成后将清洗后的 TS 放入全局内存 LRU 缓存。默认容量为 128 MiB，达到时间窗口、容量或列表结尾即停止，容量设为 0 可关闭。缓存不落盘，服务重启后清空。
+代理清单还会为每个 TS 附加 HLS revision、内部播放列表标识和分片索引。TV 请求第 N 段后，服务根据 `EXTINF` 从 N+1 开始以最多 2 路并发预读约 60 秒。若 TV 仍拿着旧 playlist 的分片队列，服务会以 `302` 将旧请求重定向到当前 playlist 相同 index 的分片，阻止旧线路继续进入代理。前台未命中的第 N 段仍然边下载边返回，不等待完整分片；传输完成后将清洗后的 TS 放入全局内存 LRU 缓存。默认容量为 128 MiB，达到时间窗口、容量或列表结尾即停止，容量设为 0 可关闭。缓存不落盘，服务重启后清空。
 
 因此这里处理的是站点自定义包装，不是 DRM 解密。本次对示例线路的验证中，解包后的清单没有 `#EXT-X-KEY` 或 `KEYFORMAT`，也没有观察到浏览器 EME/许可证交换；若以后出现这些信号，系统应报告不支持，而不是尝试绕过 DRM。
 
-当 `STRM_PROXY_PROXY_SEGMENTS=false` 时，标准 M3U8 中保留上游 TS 直连地址，TV 不再调用 `/segment`，HLS 自动选线会优先选择 MPEG-TS 从第 0 字节开始或标准 fMP4 的原生线路；若所有健康线路都有 PNG/BMP 等包装，则回退到第一条包装线路。代理开启时，包装和原生线路都能由服务端处理，因此选择首个探测成功的健康线路。切换代理模式需要重启服务，但 STRM URL 不变。
+当 `STRM_PROXY_PROXY_SEGMENTS=false` 时，标准 M3U8 中保留上游 TS 直连地址，TV 不再调用 `/segment`，HLS 自动选线会优先选择 MPEG-TS 从第 0 字节开始或标准 fMP4 的原生线路；若所有健康线路都有 PNG/BMP 等包装，则回退到最快完成固定样本的包装线路。代理开启时，包装和原生线路都能由服务端处理，因此固定样本最快完成的健康线路获胜。切换代理模式需要重启服务，但 STRM URL 不变。
 
 ## 7. STRM 内容如何生成
 
@@ -224,7 +224,7 @@ GET /segment?...        -> 代理分片模式下返回去除包装后的 MPEG-TS
 
 ## 8. 缓存和失效行为
 
-页面解析结果和解包后的原始 M3U8 默认在内存中缓存 300 秒；`source=auto` 最近验证成功的播放决策则长期保存在 SQLite。命中命名 HLS 时先按线路名映射到实时 line，再直接复用；命中 TOS/member 时只重新获取并验证该 source，不再探索其他方向。管理页人工固定的线路也存放在这一层，并带有人工覆盖标记；“恢复自动”会仅在本地清除该视频的成功选择和短期失败记录。若缓存直连方向失败，会立即删除并在同一次 `/play` 中执行完整探索；若缓存 HLS 的 manifest 获取失败，则删除缓存供播放器下次请求重新选择。`/god` 的临时媒体 URL 本身不缓存。
+页面解析结果和解包后的原始 M3U8 默认在内存中缓存 300 秒；`source=auto` 最近测速成功的播放决策保存在 SQLite，并在 `STRM_PROXY_PLAY_SELECTION_TTL_SECONDS` 指定的秒数后过期，默认 7200 秒。命中命名 HLS 时先按线路名映射到实时 line，再直接复用；命中 TOS/member 时只重新获取并轻量验证该 source，不再探索其他方向。管理页人工固定的线路也存放在这一层，但不受自动选择 TTL 影响；“恢复自动”会仅在本地清除该视频的成功选择和短期失败记录。若缓存直连方向失败，会立即删除并在同一次 `/play` 中执行完整探索；若缓存 HLS 的 manifest 获取失败，则删除缓存供播放器下次请求重新选择。`/god` 的临时媒体 URL 本身不缓存。
 
 探索任务按规范化后的 `page_url` 合并。同一进程中即使多个 TV 请求同时到达，也只抓取和探测一次；某个客户端超时或断开不会取消共享任务。所有来源都失败时，错误明细写入同一张通用 `cache_entries` 表并在 30 秒后过期，`/play` 在此期间直接返回 `503`、`Retry-After: 30` 和机器可读错误码，不生成错误视频。
 

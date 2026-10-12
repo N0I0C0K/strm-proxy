@@ -33,7 +33,9 @@ DAV_LAST_MODIFIED = formatdate(usegmt=True)
 
 @router.api_route("/dav", methods=DAV_METHODS)
 @router.api_route("/dav/", methods=DAV_METHODS)
-async def webdav_root(request: Request, settings: DavSettingsDep, repository: MediaRepositoryDep) -> Response:
+async def webdav_root(
+    request: Request, settings: DavSettingsDep, repository: MediaRepositoryDep
+) -> Response:
     logger.debug(
         "event=webdav_request method=%s path=/dav/ depth=%s",
         request.method,
@@ -83,9 +85,7 @@ async def webdav_file(
     if file_path.rstrip("/") == catalog_path:
         if request.method == "PROPFIND":
             movies = (
-                await library.visible_movies()
-                if request.headers.get("depth", "1") != "0"
-                else ()
+                await library.visible_movies() if request.headers.get("depth", "1") != "0" else ()
             )
             logger.info(
                 "event=webdav_list kind=movie count=%d depth=%s",
@@ -114,18 +114,14 @@ async def webdav_file(
     if file_path.rstrip("/") == series_path:
         if request.method == "PROPFIND":
             series = (
-                await library.visible_series()
-                if request.headers.get("depth", "1") != "0"
-                else ()
+                await library.visible_series() if request.headers.get("depth", "1") != "0" else ()
             )
             logger.info(
                 "event=webdav_list kind=series count=%d depth=%s",
                 len(series),
                 request.headers.get("depth", "1"),
             )
-            scopes = ("series",) + tuple(
-                f"series:{item.xlys_id}" for item in series
-            )
+            scopes = ("series",) + tuple(f"series:{item.xlys_id}" for item in series)
             revisions = repository.dav_revisions(
                 scopes,
                 namespace=_dav_namespace(settings),
@@ -451,9 +447,7 @@ def _propfind_episode_file(
 
 def _series_href(settings: DavSettings, series: MediaItem) -> str:
     return (
-        f"/dav/{quote(settings.series_directory, safe='')}/"
-        + quote(series.dav_name, safe="")
-        + "/"
+        f"/dav/{quote(settings.series_directory, safe='')}/" + quote(series.dav_name, safe="") + "/"
     )
 
 
@@ -517,9 +511,7 @@ def _propfind_catalog_file(
         request,
         library.movie_play_url(movie),
     )
-    href = f"/dav/{quote(settings.catalog_directory, safe='')}/" + quote(
-        movie.dav_name, safe=""
-    )
+    href = f"/dav/{quote(settings.catalog_directory, safe='')}/" + quote(movie.dav_name, safe="")
     _append_response(
         multistatus,
         href=href,
@@ -570,14 +562,12 @@ def _append_response(
         ElementTree.SubElement(prop, f"{{{DAV_NAMESPACE}}}getcontentlength").text = str(
             content_length
         )
-        ElementTree.SubElement(prop, f"{{{DAV_NAMESPACE}}}getcontenttype").text = (
-            "text/plain; charset=utf-8"
-        )
+        ElementTree.SubElement(
+            prop, f"{{{DAV_NAMESPACE}}}getcontenttype"
+        ).text = "text/plain; charset=utf-8"
     if etag:
         ElementTree.SubElement(prop, f"{{{DAV_NAMESPACE}}}getetag").text = etag
-    ElementTree.SubElement(propstat, f"{{{DAV_NAMESPACE}}}status").text = (
-        "HTTP/1.1 200 OK"
-    )
+    ElementTree.SubElement(propstat, f"{{{DAV_NAMESPACE}}}status").text = "HTTP/1.1 200 OK"
 
 
 def _strm_content(request: Request, settings: DavSettings) -> str:

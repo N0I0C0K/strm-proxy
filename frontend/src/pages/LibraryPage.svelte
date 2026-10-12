@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { SvelteSet } from 'svelte/reactivity'
   import AccountDialog from '../components/AccountDialog.svelte'
   import AppHeader from '../components/AppHeader.svelte'
   import CatalogMetrics from '../components/CatalogMetrics.svelte'
@@ -10,10 +11,24 @@
   import MediaCatalog from '../components/MediaCatalog.svelte'
   import MediaDetailDialog from '../components/MediaDetailDialog.svelte'
   import PlaybackRouteDialog from '../components/PlaybackRouteDialog.svelte'
+  import ProviderSyncPanel from '../components/ProviderSyncPanel.svelte'
   import WebDavConnect from '../components/WebDavConnect.svelte'
   import { adminApi } from '../lib/admin-api'
   import { filterAndSortMedia, recount } from '../lib/catalog'
-  import type { Catalog, LayoutMode, ManualImportResult, Media, MediaDetail, MediaTypeFilter, PlaybackRoutes, Policy, RefreshResult, RecentRefreshResult } from '../lib/types'
+  import type {
+    Catalog,
+    LayoutMode,
+    ManualImportResult,
+    Media,
+    MediaDetail,
+    MediaTypeFilter,
+    PlaybackRoutes,
+    Policy,
+    Provider,
+    ProviderFilter,
+    RefreshResult,
+    RecentRefreshResult,
+  } from '../lib/types'
 
   export let credentials: string
   export let initialCatalog: Catalog
@@ -23,11 +38,13 @@
   let catalog = initialCatalog
   let pageError = ''
   let pageNotice = ''
-  let syncing = false
+  let syncingProviders = new SvelteSet<Provider>()
+  $: syncing = syncingProviders.size > 0
+  let syncStatusRefreshing = false
   let recentRefreshing = false
-  let refreshing = new Set<number>()
-  let updating = new Set<number>()
-  let selected = new Set<number>()
+  let refreshing = new SvelteSet<number>()
+  let updating = new SvelteSet<number>()
+  let selected = new SvelteSet<number>()
   let bulkBusy = false
   let deleteConfirm = false
   let manualOpen = false
@@ -41,6 +58,7 @@
   let query = ''
   let policyFilter: 'all' | Policy = 'all'
   let mediaTypeFilter: MediaTypeFilter = 'all'
+  let providerFilter: ProviderFilter = 'all'
   let sortOrder = 'updated-desc'
   let layoutMode: LayoutMode = 'list'
   let catalogPanel: HTMLElement
@@ -56,9 +74,24 @@
   let detailError = ''
   let detailNotice = ''
 
-  $: sortedMedia = filterAndSortMedia(catalog.movies, query, policyFilter, mediaTypeFilter, sortOrder)
+  $: sortedMedia = filterAndSortMedia(
+    catalog.movies,
+    query,
+    policyFilter,
+    mediaTypeFilter,
+    sortOrder,
+    providerFilter,
+  )
   $: {
-    const signature = JSON.stringify([query, policyFilter, mediaTypeFilter, sortOrder, layoutMode, pageSize])
+    const signature = JSON.stringify([
+      query,
+      policyFilter,
+      mediaTypeFilter,
+      providerFilter,
+      sortOrder,
+      layoutMode,
+      pageSize,
+    ])
     if (signature !== lastFilterSignature) {
       page = 1
       lastFilterSignature = signature
@@ -71,17 +104,23 @@
 
   onMount(() => {
     const measure = () => {
-      gridColumns = window.innerWidth <= 560
-        ? 2
-        : Math.max(1, Math.floor((catalogPanel.clientWidth - 36 + 12) / (142 + 12)))
+      gridColumns =
+        window.innerWidth <= 560
+          ? 2
+          : Math.max(1, Math.floor((catalogPanel.clientWidth - 36 + 12) / (142 + 12)))
     }
     const observer = new ResizeObserver(measure)
     observer.observe(catalogPanel)
     window.addEventListener('resize', measure)
+    const syncStatusTimer = window.setInterval(() => refreshSyncStatus(), 5000)
+    const onFocus = () => refreshSyncStatus(true)
+    window.addEventListener('focus', onFocus)
     measure()
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.clearInterval(syncStatusTimer)
+      window.removeEventListener('focus', onFocus)
     }
   })
 
@@ -96,7 +135,8 @@
       const result = await adminApi<MediaDetail>(credentials, `/media/${xlysId}`)
       if (detailMediaId === xlysId && detailOpen) detailData = result
     } catch (error) {
-      if (detailMediaId === xlysId && detailOpen) detailError = error instanceof Error ? error.message : '读取影片详情失败'
+      if (detailMediaId === xlysId && detailOpen)
+        detailError = error instanceof Error ? error.message : '读取影片详情失败'
     } finally {
       if (detailMediaId === xlysId) detailLoading = false
     }
@@ -112,18 +152,29 @@
   }
 
   async function refreshDetail() {
-    if (!activeDetailMedia || detailActionBusy || detailLoading || syncing || recentRefreshing || refreshing.size) return
+    if (
+      !activeDetailMedia ||
+      detailActionBusy ||
+      detailLoading ||
+      syncing ||
+      recentRefreshing ||
+      refreshing.size
+    )
+      return
     const media = activeDetailMedia
     detailActionBusy = true
     detailError = ''
     detailNotice = ''
     try {
-      const result = await adminApi<RefreshResult>(credentials, `/media/${media.xlys_id}/refresh`, { method: 'POST' })
+      const result = await adminApi<RefreshResult>(credentials, `/media/${media.xlys_id}/refresh`, {
+        method: 'POST',
+      })
       catalog = result.catalog
       await loadDetail(media.xlys_id)
-      detailNotice = result.item.kind === 'series'
-        ? `刷新完成，新增 ${result.item.added_episodes} 集。`
-        : '刷新完成。'
+      detailNotice =
+        result.item.kind === 'series'
+          ? `刷新完成，新增 ${result.item.added_episodes} 集。`
+          : '刷新完成。'
     } catch (error) {
       detailError = error instanceof Error ? error.message : '刷新影片失败'
     } finally {
@@ -137,11 +188,17 @@
     detailError = ''
     detailNotice = ''
     try {
-      const updated = await adminApi<Media>(credentials, `/media/${activeDetailMedia.xlys_id}/policy`, {
-        method: 'PATCH',
-        body: JSON.stringify({ policy }),
-      })
-      const movies = catalog.movies.map((item) => item.xlys_id === updated.xlys_id ? updated : item)
+      const updated = await adminApi<Media>(
+        credentials,
+        `/media/${activeDetailMedia.xlys_id}/policy`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ policy }),
+        },
+      )
+      const movies = catalog.movies.map((item) =>
+        item.xlys_id === updated.xlys_id ? updated : item,
+      )
       catalog = { ...catalog, movies, counts: recount(movies) }
       if (detailData?.xlys_id === updated.xlys_id) detailData = { ...detailData, policy }
       detailNotice = '片库策略已更新。'
@@ -161,64 +218,141 @@
 
   async function updatePolicy(media: Media, policy: Policy) {
     if (media.policy === policy || updating.has(media.xlys_id)) return
-    updating = new Set(updating).add(media.xlys_id)
+    updating = new SvelteSet(updating).add(media.xlys_id)
     pageError = ''
     try {
       const updated = await adminApi<Media>(credentials, `/media/${media.xlys_id}/policy`, {
         method: 'PATCH',
         body: JSON.stringify({ policy }),
       })
-      const movies = catalog.movies.map((item) => item.xlys_id === updated.xlys_id ? updated : item)
+      const movies = catalog.movies.map((item) =>
+        item.xlys_id === updated.xlys_id ? updated : item,
+      )
       catalog = { ...catalog, movies, counts: recount(movies) }
     } catch (error) {
       pageError = error instanceof Error ? error.message : '更新影片策略失败'
     } finally {
       updating.delete(media.xlys_id)
-      updating = new Set(updating)
+      updating = new SvelteSet(updating)
     }
   }
 
-  async function syncCatalog() {
-    if (syncing || recentRefreshing || refreshing.size) return
-    syncing = true
+  async function syncCatalog(provider?: Provider) {
+    const targets: Provider[] = provider
+      ? [provider]
+      : (catalog.provider_syncs?.map((item) => item.provider) ?? ['xlys', 'libvio'])
+    if (
+      recentRefreshing ||
+      refreshing.size ||
+      targets.some(
+        (target) =>
+          syncingProviders.has(target) ||
+          catalog.provider_syncs?.some(
+            (source) => source.provider === target && source.status === 'syncing',
+          ),
+      )
+    )
+      return
+    syncingProviders = new SvelteSet([...syncingProviders, ...targets])
+    const name = provider === 'libvio' ? 'LIBVIO' : provider === 'xlys' ? '雪落影视' : '全部供应商'
     pageError = ''
     pageNotice = ''
     try {
-      catalog = await adminApi<Catalog>(credentials, '/sync', { method: 'POST' })
-      selected = new Set()
+      catalog = await adminApi<Catalog>(
+        credentials,
+        provider ? `/sync?provider=${provider}` : '/sync',
+        { method: 'POST' },
+      )
+      selected = new SvelteSet()
+      const count = catalog.movies.filter((item) => !provider || item.provider === provider).length
+      pageNotice = `${name}同步完成，当前共 ${count} 个条目`
+      if (catalog.discovery_failures?.length) {
+        pageNotice = `${name}同步部分完成，请查看供应商状态。`
+      }
     } catch (error) {
-      pageError = error instanceof Error ? error.message : '同步失败，请稍后重试'
+      pageError = `${name}同步失败：${error instanceof Error ? error.message : '请稍后重试'}`
+      try {
+        catalog = await adminApi<Catalog>(credentials, '/media')
+      } catch {
+        // Keep the current catalog when the service itself is unavailable.
+      }
     } finally {
-      syncing = false
+      syncingProviders = new SvelteSet(
+        [...syncingProviders].filter((target) => !targets.includes(target)),
+      )
+    }
+  }
+
+  async function refreshSyncStatus(force = false) {
+    if (
+      syncStatusRefreshing ||
+      syncing ||
+      recentRefreshing ||
+      refreshing.size ||
+      updating.size ||
+      bulkBusy ||
+      detailActionBusy
+    )
+      return
+    if (!force && !catalog.provider_syncs?.some((source) => source.status === 'syncing')) return
+    syncStatusRefreshing = true
+    try {
+      const result = await adminApi<Catalog>(credentials, '/media')
+      if (
+        !syncing &&
+        !recentRefreshing &&
+        !refreshing.size &&
+        !updating.size &&
+        !bulkBusy &&
+        !detailActionBusy
+      )
+        catalog = result
+    } catch {
+      // Retry on the next poll or when the user returns to this window.
+    } finally {
+      syncStatusRefreshing = false
     }
   }
 
   async function refreshMedia(media: Media) {
     if (syncing || recentRefreshing || refreshing.has(media.xlys_id)) return
-    refreshing = new Set(refreshing).add(media.xlys_id)
+    refreshing = new SvelteSet(refreshing).add(media.xlys_id)
     pageError = ''
     pageNotice = ''
     try {
-      const result = await adminApi<RefreshResult>(credentials, `/media/${media.xlys_id}/refresh`, { method: 'POST' })
+      const result = await adminApi<RefreshResult>(credentials, `/media/${media.xlys_id}/refresh`, {
+        method: 'POST',
+      })
       catalog = result.catalog
-      pageNotice = result.item.kind === 'series'
-        ? `《${result.item.title}》已刷新，新增 ${result.item.added_episodes} 集，当前共 ${result.item.available_episode_count} 集。`
-        : `《${result.item.title}》已刷新。`
+      pageNotice =
+        result.item.kind === 'series'
+          ? `《${result.item.title}》已刷新，新增 ${result.item.added_episodes} 集，当前共 ${result.item.available_episode_count} 集。`
+          : `《${result.item.title}》已刷新。`
     } catch (error) {
       pageError = `刷新《${media.title}》失败：${error instanceof Error ? error.message : '请稍后重试'}`
     } finally {
       refreshing.delete(media.xlys_id)
-      refreshing = new Set(refreshing)
+      refreshing = new SvelteSet(refreshing)
     }
   }
 
   async function refreshRecentSeries() {
-    if (syncing || recentRefreshing || refreshing.size || catalog.recently_watched_series_count === 0) return
+    if (
+      syncing ||
+      recentRefreshing ||
+      refreshing.size ||
+      catalog.recently_watched_series_count === 0
+    )
+      return
     recentRefreshing = true
     pageError = ''
     pageNotice = ''
     try {
-      const result = await adminApi<RecentRefreshResult>(credentials, '/media/refresh-recent-series', { method: 'POST' })
+      const result = await adminApi<RecentRefreshResult>(
+        credentials,
+        '/media/refresh-recent-series',
+        { method: 'POST' },
+      )
       catalog = result.catalog
       pageNotice = `最近观看的电视剧：检查 ${result.checked} 部，成功 ${result.refreshed} 部，新增 ${result.added_episodes} 集。`
       if (result.failures.length) {
@@ -240,7 +374,7 @@
         method: 'PATCH',
         body: JSON.stringify({ xlys_ids: [...selected], policy }),
       })
-      selected = new Set()
+      selected = new SvelteSet()
     } catch (error) {
       pageError = error instanceof Error ? error.message : '批量更新失败'
     } finally {
@@ -257,7 +391,7 @@
         method: 'DELETE',
         body: JSON.stringify({ xlys_ids: [...selected] }),
       })
-      selected = new Set()
+      selected = new SvelteSet()
       deleteConfirm = false
     } catch (error) {
       pageError = error instanceof Error ? error.message : '批量删除失败'
@@ -276,7 +410,7 @@
   function applyImportedCatalog(result: ManualImportResult) {
     if (!result.catalog) return
     catalog = result.catalog
-    selected = new Set()
+    selected = new SvelteSet()
   }
 
   async function openPlaybackRoutes(media: Media) {
@@ -286,7 +420,10 @@
     routeOpen = true
     routeBusy = true
     try {
-      routeData = await adminApi<PlaybackRoutes>(credentials, `/media/${media.xlys_id}/playback-routes`)
+      routeData = await adminApi<PlaybackRoutes>(
+        credentials,
+        `/media/${media.xlys_id}/playback-routes`,
+      )
     } catch (error) {
       routeError = error instanceof Error ? error.message : '读取播放线路失败'
     } finally {
@@ -299,10 +436,14 @@
     routeBusy = true
     routeError = ''
     try {
-      routeData = await adminApi<PlaybackRoutes>(credentials, `/media/${routeMedia.xlys_id}/playback-routes`, {
-        method: 'PUT',
-        body: JSON.stringify({ route_name: routeName }),
-      })
+      routeData = await adminApi<PlaybackRoutes>(
+        credentials,
+        `/media/${routeMedia.xlys_id}/playback-routes`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ route_name: routeName }),
+        },
+      )
     } catch (error) {
       routeError = error instanceof Error ? error.message : '保存播放线路失败'
     } finally {
@@ -315,9 +456,13 @@
     routeBusy = true
     routeError = ''
     try {
-      await adminApi<{ cleared: true; page_url: string }>(credentials, `/media/${routeMedia.xlys_id}/playback-routes`, {
-        method: 'DELETE',
-      })
+      await adminApi<{ cleared: true; page_url: string }>(
+        credentials,
+        `/media/${routeMedia.xlys_id}/playback-routes`,
+        {
+          method: 'DELETE',
+        },
+      )
       if (routeData) {
         routeData = {
           ...routeData,
@@ -339,25 +484,100 @@
     query = ''
     policyFilter = 'all'
     mediaTypeFilter = 'all'
+    providerFilter = 'all'
   }
 </script>
 
 <div class="app-shell">
-  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} recentSeries={catalog.recently_watched_series} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
+  <AppHeader
+    {syncing}
+    {recentRefreshing}
+    itemRefreshing={refreshing.size > 0}
+    recentSeriesCount={catalog.recently_watched_series_count}
+    recentSeries={catalog.recently_watched_series}
+    onRefreshRecent={refreshRecentSeries}
+    onManualImport={() => (manualOpen = true)}
+    onAccount={() => (accountOpen = true)}
+    onWebDav={() => (webDavOpen = true)}
+    {onLogout}
+  />
   <main class="workspace">
+    <ProviderSyncPanel
+      {catalog}
+      {syncingProviders}
+      disabled={recentRefreshing || refreshing.size > 0}
+      onSync={syncCatalog}
+    />
     <CatalogMetrics {catalog} bind:policyFilter />
     <section class="catalog-panel" bind:this={catalogPanel}>
-      <CatalogToolbar bind:layoutMode bind:mediaTypeFilter bind:sortOrder bind:query resultCount={sortedMedia.length} />
+      <CatalogToolbar
+        bind:layoutMode
+        bind:mediaTypeFilter
+        bind:providerFilter
+        bind:sortOrder
+        bind:query
+        resultCount={sortedMedia.length}
+      />
       {#if pageError}<div class="page-error" role="alert">{pageError}</div>{/if}
       {#if pageNotice}<div class="page-notice" role="status">{pageNotice}</div>{/if}
-      <MediaCatalog media={visibleMedia} {layoutMode} {selected} {updating} {refreshing} refreshDisabled={syncing || recentRefreshing} {bulkBusy} onSelectionChange={(value) => (selected = value)} onUpdatePolicy={updatePolicy} onRefresh={refreshMedia} onOpenDetail={openDetail} onConfigureRoute={openPlaybackRoutes} onBulkPolicy={bulkPolicy} onDelete={() => (deleteConfirm = true)} onResetFilters={resetFilters} />
-      <CatalogPagination {page} totalPages={pageCount} totalItems={sortedMedia.length} {pageSize} onPageChange={changePage} />
+      <MediaCatalog
+        media={visibleMedia}
+        {layoutMode}
+        {selected}
+        {updating}
+        {refreshing}
+        refreshDisabled={syncing || recentRefreshing}
+        {bulkBusy}
+        onSelectionChange={(value) => (selected = new SvelteSet(value))}
+        onUpdatePolicy={updatePolicy}
+        onRefresh={refreshMedia}
+        onOpenDetail={openDetail}
+        onConfigureRoute={openPlaybackRoutes}
+        onBulkPolicy={bulkPolicy}
+        onDelete={() => (deleteConfirm = true)}
+        onResetFilters={resetFilters}
+      />
+      <CatalogPagination
+        {page}
+        totalPages={pageCount}
+        totalItems={sortedMedia.length}
+        {pageSize}
+        onPageChange={changePage}
+      />
     </section>
   </main>
-  <DeleteConfirmDialog bind:open={deleteConfirm} count={selected.size} busy={bulkBusy} onDelete={deleteSelected} />
-  <ImportDialog bind:open={manualOpen} onImport={importUrl} onCatalogImported={applyImportedCatalog} />
+  <DeleteConfirmDialog
+    bind:open={deleteConfirm}
+    count={selected.size}
+    busy={bulkBusy}
+    onDelete={deleteSelected}
+  />
+  <ImportDialog
+    bind:open={manualOpen}
+    onImport={importUrl}
+    onCatalogImported={applyImportedCatalog}
+  />
   <AccountDialog bind:open={accountOpen} {credentials} {onCredentialsChanged} />
   <WebDavConnect bind:open={webDavOpen} {credentials} />
-  <PlaybackRouteDialog bind:open={routeOpen} media={routeMedia} routes={routeData} busy={routeBusy} error={routeError} onSelect={selectPlaybackRoute} onRestoreAuto={restoreAutomaticRoute} />
-  <MediaDetailDialog bind:open={detailOpen} media={activeDetailMedia} detail={detailData} loading={detailLoading} busy={detailActionBusy || syncing || recentRefreshing || refreshing.size > 0} error={detailError} notice={detailNotice} onRefresh={refreshDetail} onPolicyChange={updateDetailPolicy} onConfigureRoute={configureDetailRoute} />
+  <PlaybackRouteDialog
+    bind:open={routeOpen}
+    media={routeMedia}
+    routes={routeData}
+    busy={routeBusy}
+    error={routeError}
+    onSelect={selectPlaybackRoute}
+    onRestoreAuto={restoreAutomaticRoute}
+  />
+  <MediaDetailDialog
+    bind:open={detailOpen}
+    media={activeDetailMedia}
+    detail={detailData}
+    loading={detailLoading}
+    busy={detailActionBusy || syncing || recentRefreshing || refreshing.size > 0}
+    error={detailError}
+    notice={detailNotice}
+    onRefresh={refreshDetail}
+    onPolicyChange={updateDetailPolicy}
+    onConfigureRoute={configureDetailRoute}
+  />
 </div>

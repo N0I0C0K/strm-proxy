@@ -1,42 +1,50 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from enum import StrEnum
 import hashlib
 import json
 import re
 import secrets
+import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
 
 from sqlalchemy import (
     CheckConstraint,
+    CursorResult,
     Date,
     DateTime,
     Engine,
-    ForeignKey,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     create_engine,
-    delete as sql_delete,
     event,
     func,
     inspect,
     select,
     text,
+)
+from sqlalchemy import (
+    delete as sql_delete,
+)
+from sqlalchemy import (
     update as sql_update,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 from .catalog import CatalogEntry, safe_media_name
 from .detail import XlysDetail, parse_season_number
+from .libvio import PLAY_PATH, LibvioDetail, is_libvio_url
+from .models import MediaKind, Provider
 
 
 class Base(DeclarativeBase):
@@ -76,10 +84,15 @@ class MediaItem(Base):
             "policy",
             "source_updated_on",
         ),
+        Index("uq_media_items_provider_source_id", "provider", "source_media_id", unique=True),
     )
 
     xlys_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    media_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[Provider] = mapped_column(
+        String(32), nullable=False, default="xlys", server_default="xlys"
+    )
+    source_media_id: Mapped[str | None] = mapped_column(String(64))
+    media_type: Mapped[MediaKind] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     year: Mapped[int | None] = mapped_column(Integer)
     season_number: Mapped[int | None] = mapped_column(Integer)
@@ -168,10 +181,18 @@ class CacheRepository:
         self._sessions = sessionmaker(engine, expire_on_commit=False)
 
     def get(self, key: str) -> str | None:
+        entry = self.get_with_expiration(key)
+        return entry[0] if entry is not None else None
+
+    def get_with_expiration(
+        self,
+        key: str,
+    ) -> tuple[str, datetime | None] | None:
         with self._sessions.begin() as session:
             entry = session.get(CacheEntry, key)
             if entry is None:
                 return None
+            expires_at: datetime | None = None
             if entry.expires_at is not None:
                 expires_at = entry.expires_at
                 if expires_at.tzinfo is None:
@@ -179,7 +200,7 @@ class CacheRepository:
                 if expires_at <= datetime.now(timezone.utc):
                     session.delete(entry)
                     return None
-            return entry.value
+            return entry.value, expires_at
 
     def set(
         self,
@@ -222,10 +243,14 @@ class MediaRepository:
         with self._sessions.begin() as session:
             if session.get(AccessCredential, 1) is None:
                 salt = secrets.token_hex(16)
-                session.add(AccessCredential(
-                    id=1, username=username, salt=salt,
-                    password_hash=_hash_password(password, salt),
-                ))
+                session.add(
+                    AccessCredential(
+                        id=1,
+                        username=username,
+                        salt=salt,
+                        password_hash=_hash_password(password, salt),
+                    )
+                )
 
     def credentials_username(self) -> str:
         with self._sessions() as session:
@@ -262,7 +287,7 @@ class MediaRepository:
             scope
             for scope in requested
             if scope not in {"root", "movies", "series"}
-            and not re.fullmatch(r"series:\d+", scope)
+            and not re.fullmatch(r"series:-?\d+", scope)
         }
         if invalid:
             raise ValueError(f"Unsupported DAV revision scopes: {sorted(invalid)}")
@@ -270,9 +295,7 @@ class MediaRepository:
         need_movies = bool(requested & {"root", "movies"})
         need_all_series = bool(requested & {"root", "series"})
         requested_series_ids = {
-            int(scope.partition(":")[2])
-            for scope in requested
-            if scope.startswith("series:")
+            int(scope.partition(":")[2]) for scope in requested if scope.startswith("series:")
         }
 
         with self._sessions.begin() as session:
@@ -300,12 +323,8 @@ class MediaRepository:
                 MediaItem.policy != MoviePolicy.HIDDEN.value,
             )
             if not need_all_series:
-                series_query = series_query.where(
-                    MediaItem.xlys_id.in_(requested_series_ids)
-                )
-            series_rows = tuple(
-                session.execute(series_query.order_by(MediaItem.xlys_id)).all()
-            )
+                series_query = series_query.where(MediaItem.xlys_id.in_(requested_series_ids))
+            series_rows = tuple(session.execute(series_query.order_by(MediaItem.xlys_id)).all())
             series_ids = tuple(row.xlys_id for row in series_rows)
             episode_rows = (
                 tuple(
@@ -426,6 +445,7 @@ class MediaRepository:
                     sql_delete(MediaItem).where(
                         MediaItem.media_type == MediaType.MOVIE.value,
                         MediaItem.policy == MoviePolicy.AUTO.value,
+                        MediaItem.provider == "xlys",
                         MediaItem.xlys_id.not_in(discovered_ids),
                     )
                 )
@@ -529,24 +549,178 @@ class MediaRepository:
         with self._sessions() as session:
             return session.get(MediaItem, xlys_id)
 
+    def import_libvio_detail(self, detail: LibvioDetail, *, keep: bool = True) -> MediaItem:
+        """Keep source IDs separate from the legacy numeric administration IDs."""
+        with self._sessions.begin() as session:
+            # Serialize ID allocation and duplicate imports across processes.
+            session.execute(text("BEGIN IMMEDIATE"))
+            return self._upsert_libvio_detail(session, detail, keep=keep)
+
+    def import_discovered_libvio(
+        self,
+        details: tuple[LibvioDetail, ...],
+        *,
+        kind: str,
+        replace_auto: bool = True,
+    ) -> None:
+        """Replace only this provider's automatic snapshot; preserve user policy."""
+        if kind not in {MediaType.MOVIE.value, MediaType.SERIES.value}:
+            raise ValueError("Unsupported media type")
+        if any(detail.kind != kind for detail in details):
+            raise ValueError("LIBVIO discovery contains a different media type")
+        # An empty result must never clear a working catalog.
+        if not details:
+            return
+        with self._sessions.begin() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            for detail in details:
+                self._upsert_libvio_detail(session, detail, keep=False)
+            if replace_auto:
+                conditions = [
+                    MediaItem.provider == "libvio",
+                    MediaItem.media_type == kind,
+                    MediaItem.policy == MoviePolicy.AUTO.value,
+                    MediaItem.source_media_id.not_in({item.public_media_id for item in details}),
+                ]
+                if kind == MediaType.SERIES.value:
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+                    conditions.append(
+                        MediaItem.last_watched_at.is_(None) | (MediaItem.last_watched_at < cutoff)
+                    )
+                session.execute(sql_delete(MediaItem).where(*conditions))
+
+    @staticmethod
+    def _upsert_libvio_detail(session: Session, detail: LibvioDetail, *, keep: bool) -> MediaItem:
+        media = session.scalar(
+            select(MediaItem).where(
+                MediaItem.provider == "libvio",
+                MediaItem.source_media_id == detail.public_media_id,
+            )
+        )
+        if media is None:
+            # Existing XLYS IDs remain unchanged. Other providers receive
+            # database-local IDs from a separate, negative range.
+            lowest_id = session.scalar(select(func.min(MediaItem.xlys_id))) or 0
+            media_id = min(lowest_id, 0) - 1
+            if detail.kind == MediaType.MOVIE.value:
+                desired = safe_media_name(detail.title, detail.year) + ".strm"
+                name = _available_movie_name(
+                    session,
+                    desired,
+                    media_id,
+                    provider="libvio",
+                    source_media_id=detail.public_media_id,
+                )
+            else:
+                name = _available_media_name(
+                    session,
+                    MediaType.SERIES,
+                    safe_media_name(detail.title, detail.year),
+                    media_id,
+                    provider="libvio",
+                    source_media_id=detail.public_media_id,
+                )
+            media = MediaItem(
+                xlys_id=media_id,
+                provider="libvio",
+                source_media_id=detail.public_media_id,
+                media_type=detail.kind,
+                title=detail.title,
+                dav_name=name,
+                policy=MoviePolicy.KEEP.value if keep else MoviePolicy.AUTO.value,
+            )
+            session.add(media)
+            session.flush()
+        elif media.media_type != detail.kind:
+            raise ValueError("LIBVIO 详情页类型与已收录影片不匹配")
+        media.title = detail.title
+        media.year = detail.year
+        media.season_number = detail.season_number
+        media.cover_url = detail.cover_url or media.cover_url
+        media.douban_rating = detail.douban_rating
+        media.source_url = detail.source_url
+        media.declared_episode_count = detail.declared_episode_count
+        media.last_checked_at = datetime.now(timezone.utc)
+        if detail.source_updated_on:
+            media.source_updated_on = _parse_source_date(detail.source_updated_on)
+            media.source_modified_at = _date_at_utc_midnight(detail.source_updated_on)
+        if keep:
+            media.policy = MoviePolicy.KEEP.value
+        if detail.kind == MediaType.SERIES.value:
+            existing = {
+                episode.source_index: episode
+                for episode in session.scalars(
+                    select(Episode).where(Episode.media_xlys_id == media.xlys_id)
+                )
+            }
+            discovered: set[int] = set()
+            for item in detail.episodes:
+                discovered.add(item.source_index)
+                episode = existing.get(item.source_index)
+                if episode is None:
+                    session.add(
+                        Episode(
+                            media_xlys_id=media.xlys_id,
+                            source_index=item.source_index,
+                            label=item.label,
+                            play_path=item.play_path,
+                        )
+                    )
+                else:
+                    episode.label = item.label
+                    episode.play_path = item.play_path
+            for index, episode in existing.items():
+                if index not in discovered:
+                    session.delete(episode)
+        return media
+
     def episode_counts(self) -> dict[int, int]:
         """Count stored episodes in one query for catalog cards."""
         with self._sessions() as session:
-            return dict(session.execute(
-                select(Episode.media_xlys_id, func.count(Episode.id))
-                .group_by(Episode.media_xlys_id)
-            ).all())
+            return {
+                media_id: count
+                for media_id, count in session.execute(
+                    select(Episode.media_xlys_id, func.count(Episode.id)).group_by(
+                        Episode.media_xlys_id
+                    )
+                ).tuples()
+            }
 
     def mark_series_watched(self, page_url: str) -> None:
         """Record successful episode playback for a known series only."""
         parsed = urlparse(page_url)
+        if is_libvio_url(page_url):
+            match = PLAY_PATH.fullmatch(parsed.path)
+            if match is None:
+                return
+            with self._sessions.begin() as session:
+                media_id = session.scalar(
+                    select(MediaItem.xlys_id)
+                    .join(Episode)
+                    .where(
+                        MediaItem.provider == "libvio",
+                        MediaItem.source_media_id == match[1],
+                        MediaItem.media_type == MediaType.SERIES.value,
+                        Episode.source_index == int(match[3]) - 1,
+                        Episode.play_path == parsed.path,
+                    )
+                )
+                if media_id is not None:
+                    session.execute(
+                        sql_update(MediaItem)
+                        .where(MediaItem.xlys_id == media_id)
+                        .values(last_watched_at=datetime.now(timezone.utc))
+                    )
+            return
         match = re.fullmatch(r"/(?:[^/]+/)?play/(\d+)-(\d+)\.htm", parsed.path)
         if match is None:
             return
         xlys_id, source_index = map(int, match.groups())
         with self._sessions.begin() as session:
             known_episode = session.scalar(
-                select(Episode.id).join(MediaItem).where(
+                select(Episode.id)
+                .join(MediaItem)
+                .where(
                     Episode.media_xlys_id == xlys_id,
                     Episode.source_index == source_index,
                     Episode.play_path == parsed.path,
@@ -641,15 +815,15 @@ class MediaRepository:
                 .where(MediaItem.xlys_id.in_(xlys_ids))
                 .values(policy=policy.value)
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def delete_media(self, xlys_ids: tuple[int, ...]) -> int:
         if not xlys_ids:
             return 0
         with self._sessions.begin() as session:
-            result = session.execute(
-                sql_delete(MediaItem).where(MediaItem.xlys_id.in_(xlys_ids))
-            )
+            result = session.execute(sql_delete(MediaItem).where(MediaItem.xlys_id.in_(xlys_ids)))
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def get_movie(self, xlys_id: int) -> MediaItem | None:
@@ -690,6 +864,7 @@ class MediaRepository:
                 )
                 .values(policy=policy.value)
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def delete_movies(self, xlys_ids: tuple[int, ...]) -> int:
@@ -702,6 +877,7 @@ class MediaRepository:
                     MediaItem.media_type == MediaType.MOVIE.value,
                 )
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def has_series(self) -> bool:
@@ -734,6 +910,7 @@ class MediaRepository:
                     sql_delete(MediaItem).where(
                         MediaItem.media_type == MediaType.SERIES.value,
                         MediaItem.policy == MoviePolicy.AUTO.value,
+                        MediaItem.provider == "xlys",
                         MediaItem.xlys_id.not_in(active_ids),
                         (
                             MediaItem.last_watched_at.is_(None)
@@ -746,9 +923,7 @@ class MediaRepository:
                 title = detail.title if detail is not None else entry.title
                 year = detail.year if detail is not None else entry.year
                 season_number = (
-                    detail.season_number
-                    if detail is not None
-                    else parse_season_number(entry.title)
+                    detail.season_number if detail is not None else parse_season_number(entry.title)
                 )
                 stored = session.get(MediaItem, entry.xlys_id)
                 if stored is not None and stored.media_type != MediaType.SERIES.value:
@@ -775,13 +950,11 @@ class MediaRepository:
                         title=title,
                         year=year,
                         season_number=season_number,
-                        cover_url=(
-                            detail.cover_url if detail is not None else None
-                        ) or entry.cover_url,
+                        cover_url=(detail.cover_url if detail is not None else None)
+                        or entry.cover_url,
                         douban_rating=entry.douban_rating,
-                        source_url=(
-                            detail.source_url if detail is not None else None
-                        ) or entry.source_url,
+                        source_url=(detail.source_url if detail is not None else None)
+                        or entry.source_url,
                         declared_episode_count=declared_episode_count,
                         source_updated_on=source_date,
                         source_modified_at=source_modified_at,
@@ -810,9 +983,7 @@ class MediaRepository:
                 existing = {
                     episode.source_index: episode
                     for episode in session.scalars(
-                        select(Episode).where(
-                            Episode.media_xlys_id == entry.xlys_id
-                        )
+                        select(Episode).where(Episode.media_xlys_id == entry.xlys_id)
                     )
                 }
                 discovered_episodes = (
@@ -931,7 +1102,9 @@ def create_media_repository(database_path: str) -> MediaRepository:
         )
 
     @event.listens_for(engine, "connect")
-    def configure_sqlite(dbapi_connection, _connection_record) -> None:
+    def configure_sqlite(
+        dbapi_connection: sqlite3.Connection, _connection_record: ConnectionPoolEntry
+    ) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
         cursor.execute("PRAGMA busy_timeout = 5000")
@@ -999,9 +1172,7 @@ def _migrate_legacy_movies(engine: Engine) -> None:
             )
         )
         if missing:
-            raise RuntimeError(
-                f"Legacy movie migration left {missing} records unmigrated"
-            )
+            raise RuntimeError(f"Legacy movie migration left {missing} records unmigrated")
         connection.execute(text("DROP TABLE movies"))
 
 
@@ -1009,31 +1180,39 @@ def _upgrade_media_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     if "media_items" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"] for column in inspector.get_columns("media_items")
-    }
+    columns = {column["name"] for column in inspector.get_columns("media_items")}
+    with engine.begin() as connection:
+        if "provider" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE media_items ADD COLUMN provider VARCHAR(32) NOT NULL DEFAULT 'xlys'"
+                )
+            )
+        if "source_media_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE media_items ADD COLUMN source_media_id VARCHAR(64)")
+            )
+        connection.execute(
+            text(
+                "UPDATE media_items SET source_media_id = CAST(xlys_id AS TEXT) WHERE provider = 'xlys' AND source_media_id IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_media_items_provider_source_id ON media_items (provider, source_media_id)"
+            )
+        )
     if "douban_rating" not in columns:
         with engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE media_items ADD COLUMN douban_rating FLOAT")
-            )
+            connection.execute(text("ALTER TABLE media_items ADD COLUMN douban_rating FLOAT"))
     if "last_watched_at" not in columns:
         with engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE media_items ADD COLUMN last_watched_at DATETIME")
-            )
+            connection.execute(text("ALTER TABLE media_items ADD COLUMN last_watched_at DATETIME"))
     if "episodes" in inspector.get_table_names():
-        episode_columns = {
-            column["name"] for column in inspector.get_columns("episodes")
-        }
+        episode_columns = {column["name"] for column in inspector.get_columns("episodes")}
         if "play_path" not in episode_columns:
             with engine.begin() as connection:
-                connection.execute(
-                    text(
-                        "ALTER TABLE episodes "
-                        "ADD COLUMN play_path VARCHAR(512)"
-                    )
-                )
+                connection.execute(text("ALTER TABLE episodes ADD COLUMN play_path VARCHAR(512)"))
                 connection.execute(
                     text(
                         "UPDATE episodes "
@@ -1104,6 +1283,9 @@ def _available_movie_name(
     session: Session,
     desired: str,
     xlys_id: int,
+    *,
+    provider: str = "xlys",
+    source_media_id: str | None = None,
 ) -> str:
     owner = session.scalar(
         select(MediaItem.xlys_id).where(
@@ -1113,7 +1295,7 @@ def _available_movie_name(
     )
     if owner is None or owner == xlys_id:
         return desired
-    return desired[:-5] + f" [xlys-{xlys_id}].strm"
+    return desired[:-5] + f" [{provider}-{source_media_id or xlys_id}].strm"
 
 
 def _available_media_name(
@@ -1121,6 +1303,9 @@ def _available_media_name(
     media_type: MediaType,
     desired: str,
     xlys_id: int,
+    *,
+    provider: str = "xlys",
+    source_media_id: str | None = None,
 ) -> str:
     owner = session.scalar(
         select(MediaItem.xlys_id).where(
@@ -1130,4 +1315,4 @@ def _available_media_name(
     )
     if owner is None or owner == xlys_id:
         return desired
-    return desired + f" [xlys-{xlys_id}]"
+    return desired + f" [{provider}-{source_media_id or xlys_id}]"

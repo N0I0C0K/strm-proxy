@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
 import re
 import secrets
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
 
 from .database import CacheRepository
+from .json_types import decode_json
 from .logging_utils import describe_http_error, safe_url_for_log
-from .models import ResolvedPage
-from .models import ResolverError
-from .xlys import XlysResolver, validate_page_url
-
+from .models import ResolvedPage, ResolverError
+from .xlys import DirectMediaResult, XlysResolver, validate_page_url
 
 PlaybackSource = Literal["hls", "tos", "member", "url3"]
 
@@ -74,8 +73,10 @@ class PlaybackSelectionCache:
         repository: CacheRepository,
         *,
         enabled: bool = True,
+        ttl_seconds: float = 7200.0,
     ) -> None:
         self.enabled = enabled
+        self.ttl_seconds = ttl_seconds
         self._repository = repository
 
     def get(self, resolved: ResolvedPage) -> PlaybackSelection | None:
@@ -91,34 +92,41 @@ class PlaybackSelectionCache:
                     return selection
                 logger.warning(
                     "event=series_route_unavailable series_id=%d pid=%d route=%s",
-                    series_id, resolved.pid, route_name,
+                    series_id,
+                    resolved.pid,
+                    route_name,
                 )
         cache_key = _cache_key(resolved.page_url)
-        raw_selection = self._repository.get(cache_key)
-        if raw_selection is None:
+        cached_entry = self._repository.get_with_expiration(cache_key)
+        if cached_entry is None:
             logger.debug(
                 "event=play_selection_cache_miss pid=%d",
                 resolved.pid,
             )
             return None
+        raw_selection, expires_at = cached_entry
         try:
             selection = _decode_selection(raw_selection)
         except (TypeError, ValueError, json.JSONDecodeError):
             self._repository.delete(cache_key)
             logger.info(
-                "event=play_selection_cache_invalidated pid=%d "
-                "reason=invalid_value",
+                "event=play_selection_cache_invalidated pid=%d reason=invalid_value",
                 resolved.pid,
             )
             return None
+
+        # Selections written before TTL support had no expiry. Preserve manual
+        # overrides and give old automatic decisions one final TTL window.
+        expiration_upgraded = not selection.manual_override and expires_at is None
+        if expiration_upgraded:
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds)
 
         stored_selection = selection
         selection, invalid_reason = self._validate_selection(selection, resolved)
         if invalid_reason is not None:
             self._repository.delete(cache_key)
             logger.info(
-                "event=play_selection_cache_invalidated pid=%d source=%s "
-                "line=%s reason=%s",
+                "event=play_selection_cache_invalidated pid=%d source=%s line=%s reason=%s",
                 resolved.pid,
                 selection.source,
                 selection.line,
@@ -126,13 +134,11 @@ class PlaybackSelectionCache:
             )
             return None
         route_remapped = selection != stored_selection
-        revision_upgraded = (
-            selection.source == "hls" and selection.revision is None
-        )
+        revision_upgraded = selection.source == "hls" and selection.revision is None
         if revision_upgraded:
             selection = replace(selection, revision=_new_revision())
-        if selection != stored_selection:
-            self._set(resolved.page_url, selection)
+        if selection != stored_selection or expiration_upgraded:
+            self._set(resolved.page_url, selection, expires_at=expires_at)
         if route_remapped:
             logger.info(
                 "event=play_selection_cache_remapped pid=%d route=%s line=%d",
@@ -145,6 +151,12 @@ class PlaybackSelectionCache:
                 "event=play_selection_cache_upgraded pid=%d revision=%s",
                 resolved.pid,
                 selection.revision,
+            )
+        if expiration_upgraded:
+            logger.info(
+                "event=play_selection_cache_upgraded pid=%d ttl_seconds=%s",
+                resolved.pid,
+                self.ttl_seconds,
             )
 
         logger.info(
@@ -207,7 +219,7 @@ class PlaybackSelectionCache:
             "route=%s manual=%s revision=%s",
             resolved.pid,
             line,
-            candidate.route_name,
+            selection.route_name,
             manual_override,
             selection.revision,
         )
@@ -241,7 +253,9 @@ class PlaybackSelectionCache:
             self.clear(page_url)
         logger.info(
             "event=series_route_set series_id=%d route=%s episodes=%d",
-            series_id, route_name, len(page_urls),
+            series_id,
+            route_name,
+            len(page_urls),
         )
 
     def clear_series_route(self, series_id: int, page_urls: tuple[str, ...]) -> None:
@@ -252,9 +266,7 @@ class PlaybackSelectionCache:
             self.clear(page_url)
         logger.info("event=series_route_cleared series_id=%d", series_id)
 
-    def migrate_legacy_series_route(
-        self, series_id: int, page_urls: tuple[str, ...]
-    ) -> None:
+    def migrate_legacy_series_route(self, series_id: int, page_urls: tuple[str, ...]) -> None:
         """Promote an older first-episode manual choice to the whole series."""
         if not self.enabled or not page_urls or self._series_route(series_id) is not None:
             return
@@ -277,7 +289,12 @@ class PlaybackSelectionCache:
         try:
             data = json.loads(raw)
             name, revision = data["route_name"], data["revision"]
-            if not isinstance(name, str) or not name or not isinstance(revision, str) or not revision:
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(revision, str)
+                or not revision
+            ):
                 raise ValueError("Invalid series route")
             return name, revision
         except (TypeError, ValueError, KeyError, json.JSONDecodeError):
@@ -298,8 +315,7 @@ class PlaybackSelectionCache:
             return
         self._repository.delete(_cache_key(resolved.page_url))
         logger.info(
-            "event=play_selection_cache_invalidated pid=%d source=%s "
-            "line=%s reason=%s",
+            "event=play_selection_cache_invalidated pid=%d source=%s line=%s reason=%s",
             resolved.pid,
             selection.source,
             selection.line,
@@ -320,8 +336,7 @@ class PlaybackSelectionCache:
             return
         self._repository.delete(_cache_key(resolved.page_url))
         logger.info(
-            "event=play_selection_cache_invalidated pid=%d source=hls line=%d "
-            "reason=%s",
+            "event=play_selection_cache_invalidated pid=%d source=hls line=%d reason=%s",
             resolved.pid,
             line,
             reason,
@@ -351,10 +366,7 @@ class PlaybackSelectionCache:
         self._repository.set(
             _failure_cache_key(page_url),
             json.dumps({"errors": errors}, separators=(",", ":")),
-            expires_at=(
-                datetime.now(timezone.utc)
-                + timedelta(seconds=FAILURE_CACHE_SECONDS)
-            ),
+            expires_at=(datetime.now(timezone.utc) + timedelta(seconds=FAILURE_CACHE_SECONDS)),
         )
         logger.info(
             "event=play_failure_cache_set retry_after_seconds=%d",
@@ -365,7 +377,15 @@ class PlaybackSelectionCache:
         if self.enabled:
             self._repository.delete(_failure_cache_key(page_url))
 
-    def _set(self, page_url: str, selection: PlaybackSelection) -> None:
+    def _set(
+        self,
+        page_url: str,
+        selection: PlaybackSelection,
+        *,
+        expires_at: datetime | None = None,
+    ) -> None:
+        if not selection.manual_override and expires_at is None:
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds)
         self._repository.set(
             _cache_key(page_url),
             json.dumps(
@@ -380,6 +400,7 @@ class PlaybackSelectionCache:
                 },
                 separators=(",", ":"),
             ),
+            expires_at=expires_at,
         )
         self.clear_failure(page_url)
 
@@ -405,16 +426,14 @@ class PlaybackSelectionCache:
         if selection.source == "member":
             return (
                 selection,
-                (
-                    None
-                    if resolved.member_token is not None
-                    else "source_not_advertised"
-                ),
+                (None if resolved.member_token is not None else "source_not_advertised"),
             )
         if selection.source == "url3":
             return (
                 selection,
-                None if selection.line is not None and 0 <= selection.line < len(resolved.direct_candidates)
+                None
+                if selection.line is not None
+                and 0 <= selection.line < len(resolved.direct_candidates)
                 else "direct_line_not_available",
             )
         if selection.route_name is not None:
@@ -449,17 +468,15 @@ class PlaybackSelectionCache:
         ):
             return selection, "line_not_available"
         candidate = resolved.candidates[selection.line]
-        if (
-            candidate.kind != selection.candidate_kind
-            or candidate.url != selection.candidate_url
-        ):
+        if candidate.kind != selection.candidate_kind or candidate.url != selection.candidate_url:
             return selection, "candidate_changed"
-        if candidate.route_name is not None:
+        route_name = _unique_route_name(resolved, selection.line)
+        if route_name is not None:
             return (
                 PlaybackSelection(
                     source="hls",
                     line=selection.line,
-                    route_name=candidate.route_name,
+                    route_name=route_name,
                     manual_override=selection.manual_override,
                     candidate_kind=candidate.kind,
                     candidate_url=candidate.url,
@@ -484,7 +501,8 @@ def _manual_route_selection(
     if route_name == "source:tos":
         return (
             PlaybackSelection(source="tos", route_name=route_name, manual_override=True)
-            if resolved.tos_available else None
+            if resolved.tos_available
+            else None
         )
     if route_name.startswith("url3:"):
         try:
@@ -495,16 +513,19 @@ def _manual_route_selection(
             PlaybackSelection(
                 source="url3", line=index, route_name=route_name, manual_override=True
             )
-            if 0 <= index < len(resolved.direct_candidates) else None
+            if 0 <= index < len(resolved.direct_candidates)
+            else None
         )
     matches = [
-        index for index, candidate in enumerate(resolved.candidates)
+        index
+        for index, candidate in enumerate(resolved.candidates)
         if candidate.route_name is not None
         and candidate.route_name.casefold() == route_name.casefold()
     ]
     return (
         _hls_selection(resolved, matches[0], manual_override=True, revision=revision)
-        if len(matches) == 1 else None
+        if len(matches) == 1
+        else None
     )
 
 
@@ -526,6 +547,19 @@ def _stable_hls_revision(candidate_kind: str, candidate_url: str) -> str:
     return hashlib.sha256(value).hexdigest()[:12]
 
 
+def _unique_route_name(resolved: ResolvedPage, line: int) -> str | None:
+    """Return a stable route identity only when it identifies one candidate."""
+    route_name = resolved.candidates[line].route_name
+    if route_name is None:
+        return None
+    wanted_route = route_name.casefold()
+    match_count = sum(
+        candidate.route_name is not None and candidate.route_name.casefold() == wanted_route
+        for candidate in resolved.candidates
+    )
+    return route_name if match_count == 1 else None
+
+
 def _hls_selection(
     resolved: ResolvedPage,
     line: int,
@@ -537,21 +571,22 @@ def _hls_selection(
     return PlaybackSelection(
         source="hls",
         line=line,
-        route_name=candidate.route_name,
+        route_name=_unique_route_name(resolved, line),
         manual_override=manual_override,
         candidate_kind=candidate.kind,
         candidate_url=candidate.url,
-        revision=revision
-        or _stable_hls_revision(candidate.kind, candidate.url),
+        revision=revision or _stable_hls_revision(candidate.kind, candidate.url),
     )
 
 
 def _decode_selection(value: str) -> PlaybackSelection:
-    data = json.loads(value)
+    data = decode_json(value)
     if not isinstance(data, dict):
         raise TypeError("Playback selection must be a JSON object")
     source = data.get("source")
-    if source not in {"hls", "tos", "member", "url3"}:
+    if not isinstance(source, str) or (
+        source != "hls" and source != "tos" and source != "member" and source != "url3"
+    ):
         raise ValueError("Playback selection has an invalid source")
     line = data.get("line")
     if line is not None and type(line) is not int:
@@ -585,15 +620,13 @@ def _decode_selection(value: str) -> PlaybackSelection:
 
 
 def _decode_failure(value: str) -> PlaybackFailure:
-    data = json.loads(value)
+    data = decode_json(value)
     if not isinstance(data, dict):
         raise TypeError("Playback failure must be a JSON object")
     errors = data.get("errors")
-    if not isinstance(errors, list) or not all(
-        isinstance(error, str) for error in errors
-    ):
+    if not isinstance(errors, list) or not all(isinstance(error, str) for error in errors):
         raise TypeError("Playback failure errors must be a string list")
-    return PlaybackFailure(errors=tuple(errors))
+    return PlaybackFailure(errors=tuple(error for error in errors if isinstance(error, str)))
 
 
 class PlaybackCoordinator:
@@ -667,13 +700,10 @@ class PlaybackCoordinator:
         except (ResolverError, httpx.HTTPError) as exc:
             raise PlaybackUnavailable((f"hls: {_error_detail(exc)}",)) from exc
 
-        # An explicit HLS request must not replace a valid cached direct source.
-        # In that uncommon case, use a deterministic revision so redirects are
-        # stable without changing the auto-play decision.
-        if cached_selection is None:
-            selection = self.cache.remember_hls(resolved, selected_line)
-        else:
-            selection = _hls_selection(resolved, selected_line)
+        # A forced HLS choice must remain stable for subsequent manifest and
+        # segment requests. Otherwise a cached direct choice makes every
+        # manifest request benchmark HLS again and can rotate the revision.
+        selection = self.cache.remember_hls(resolved, selected_line)
         return PlaybackResult(
             resolved=resolved,
             selection=selection,
@@ -722,7 +752,8 @@ class PlaybackCoordinator:
                     )
                 else:
                     _resolved, media_url = await resolver.resolve_direct_media(
-                        page_url, cached_selection.source,
+                        page_url,
+                        cached_selection.source,
                     )
             except (ResolverError, httpx.HTTPError) as exc:
                 failed_cached_source = cached_selection.source
@@ -733,8 +764,6 @@ class PlaybackCoordinator:
                 )
                 errors = [f"{cached_selection.source}: {_error_detail(exc)}"]
             else:
-                if not cached_selection.manual_override:
-                    self.cache.remember_direct(resolved, cached_selection.source)
                 return PlaybackResult(
                     resolved=resolved,
                     selection=cached_selection,
@@ -744,57 +773,97 @@ class PlaybackCoordinator:
         else:
             errors = []
 
-        direct_sources = tuple(
-            source
-            for source, available in (
-                ("tos", resolved.tos_available),
-                ("member", resolved.member_token is not None),
-            )
-            if available
-        )
-        for direct_source in direct_sources:
-            if direct_source == failed_cached_source:
-                continue
-            try:
-                _resolved, media_url = await resolver.resolve_direct_media(
-                    page_url,
-                    direct_source,
+        direct_sources: list[Literal["tos", "member"]] = []
+        if resolved.tos_available:
+            direct_sources.append("tos")
+        if resolved.member_token is not None:
+            direct_sources.append("member")
+        source_order: list[PlaybackSource] = [
+            source for source in direct_sources if source != failed_cached_source
+        ]
+        tasks: dict[PlaybackSource, asyncio.Task[int | DirectMediaResult]] = {}
+        if source_order:
+            benchmark_direct = (
+                getattr(
+                    resolver,
+                    "benchmark_direct_media",
+                    None,
                 )
-            except (ResolverError, httpx.HTTPError) as exc:
-                errors.append(f"{direct_source}: {_error_detail(exc)}")
-                logger.warning(
-                    "event=play_direct_fallback pid=%d source=%s detail=%s",
-                    resolved.pid,
-                    direct_source,
-                    _error_detail(exc),
-                )
-                continue
-            self.cache.remember_direct(resolved, direct_source)
-            return PlaybackResult(
-                resolved=resolved,
-                selection=PlaybackSelection(source=direct_source),
-                media_url=media_url,
-                cache_hit=False,
+                or resolver.resolve_direct_media
             )
-
+            for direct_source in direct_sources:
+                if direct_source == failed_cached_source:
+                    continue
+                tasks[direct_source] = asyncio.create_task(
+                    benchmark_direct(page_url, direct_source),
+                    name=f"playback-probe:{direct_source}:{page_url}",
+                )
         if resolved.candidates:
-            try:
-                selected_line = await resolver.find_working_hls_line(
+            source_order.append("hls")
+            tasks["hls"] = asyncio.create_task(
+                resolver.find_working_hls_line(
                     page_url,
                     preferred_line=preferred_line,
-                )
-            except (ResolverError, httpx.HTTPError) as exc:
-                errors.append(f"hls: {_error_detail(exc)}")
-            else:
-                selection = self.cache.remember_hls(resolved, selected_line)
-                return PlaybackResult(
-                    resolved=resolved,
-                    selection=selection,
-                    media_url=None,
-                    cache_hit=False,
-                )
+                ),
+                name=f"playback-probe:hls:{page_url}",
+            )
         else:
             errors.append("hls: no HLS source was advertised")
+
+        try:
+            while tasks:
+                done, _pending = await asyncio.wait(
+                    tasks.values(),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for source in source_order:
+                    task = tasks.get(source)
+                    if task is None or task not in done:
+                        continue
+                    del tasks[source]
+                    try:
+                        probe_result = task.result()
+                    except (ResolverError, httpx.HTTPError) as exc:
+                        errors.append(f"{source}: {_error_detail(exc)}")
+                        if source != "hls":
+                            logger.warning(
+                                "event=play_direct_fallback pid=%d source=%s detail=%s",
+                                resolved.pid,
+                                source,
+                                _error_detail(exc),
+                            )
+                        continue
+
+                    if source == "hls":
+                        assert isinstance(probe_result, int)
+                        selected_line = probe_result
+                        selection = self.cache.remember_hls(
+                            resolved,
+                            selected_line,
+                        )
+                        return PlaybackResult(
+                            resolved=resolved,
+                            selection=selection,
+                            media_url=None,
+                            cache_hit=False,
+                        )
+
+                    assert source == "tos" or source == "member"
+                    assert isinstance(probe_result, tuple)
+                    _direct_resolved, media_url = probe_result
+                    self.cache.remember_direct(resolved, source)
+                    return PlaybackResult(
+                        resolved=resolved,
+                        selection=PlaybackSelection(source=source),
+                        media_url=media_url,
+                        cache_hit=False,
+                    )
+        finally:
+            pending = tuple(tasks.values())
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
         failure_errors = tuple(errors) or ("No playable source is available",)
         self.cache.remember_failure(page_url, failure_errors)

@@ -12,22 +12,15 @@ import httpx
 def local_url(url: str, service_url: str) -> str:
     target = urlsplit(url)
     service = urlsplit(service_url)
-    return urlunsplit(
-        (service.scheme, service.netloc, target.path, target.query, target.fragment)
-    )
+    return urlunsplit((service.scheme, service.netloc, target.path, target.query, target.fragment))
 
 
 def ts_stats(payload: bytes) -> dict[str, object]:
     packet_count, remainder = divmod(len(payload), 188)
-    bad_sync = sum(
-        payload[offset] != 0x47 for offset in range(0, packet_count * 188, 188)
-    )
+    bad_sync = sum(payload[offset] != 0x47 for offset in range(0, packet_count * 188, 188))
     # These signatures live in elementary-stream payloads. They are a small,
     # dependency-free smoke check rather than a replacement for a full demuxer.
-    h264 = any(
-        marker in payload
-        for marker in (b"\x00\x00\x01\x67", b"\x00\x00\x00\x01\x67")
-    )
+    h264 = any(marker in payload for marker in (b"\x00\x00\x01\x67", b"\x00\x00\x00\x01\x67"))
     aac = b"\xff\xf1" in payload or b"\xff\xf9" in payload
     return {
         "bytes": len(payload),
@@ -72,9 +65,7 @@ def main() -> int:
             follow_redirects=False,
         )
         if play_response.status_code not in {301, 302, 303, 307, 308}:
-            raise RuntimeError(
-                f"/play returned {play_response.status_code}: {play_response.text}"
-            )
+            raise RuntimeError(f"/play returned {play_response.status_code}: {play_response.text}")
         manifest_url = urljoin(strm_url, play_response.headers["location"])
         result["play"] = {
             "status": play_response.status_code,
@@ -105,9 +96,7 @@ def main() -> int:
             started = time.perf_counter()
             first_byte_seconds: float | None = None
             media = bytearray()
-            with client.stream(
-                "GET", local_url(segment_url, args.service_url)
-            ) as response:
+            with client.stream("GET", local_url(segment_url, args.service_url)) as response:
                 response.raise_for_status()
                 for chunk in response.iter_bytes():
                     if first_byte_seconds is None:
@@ -126,9 +115,7 @@ def main() -> int:
         result["media"] = segment_results
 
     strict_ts = all(
-        item["packets"] > 0
-        and item["bad_sync"] == 0
-        and item["remainder"] == 0
+        item["packets"] > 0 and item["bad_sync"] == 0 and item["remainder"] == 0
         for item in segment_results
     )
     codecs = {
@@ -137,10 +124,7 @@ def main() -> int:
     }
     result["codecs"] = codecs
     result["ok"] = bool(
-        result["manifest"]["proxied"]
-        and strict_ts
-        and codecs["h264"]
-        and codecs["aac"]
+        result["manifest"]["proxied"] and strict_ts and codecs["h264"] and codecs["aac"]
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1

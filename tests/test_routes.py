@@ -11,7 +11,6 @@ from strm_proxy.config import AppSettings
 from strm_proxy.dependencies import get_app_services, get_http_client, get_resolver
 from strm_proxy.models import ResolvedPage, ResolverError, StreamCandidate
 
-
 PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
 
 
@@ -120,9 +119,7 @@ def test_hls_uses_global_proxy_setting_and_ignores_query_override(
     query_override: str,
     expects_proxy: bool,
 ) -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", proxy_segments=configured)
-    )
+    application = create_app(AppSettings(database_path=":memory:", proxy_segments=configured))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver()
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
@@ -141,9 +138,7 @@ def test_hls_uses_global_proxy_setting_and_ignores_query_override(
 
 
 def test_zero_segment_cache_capacity_keeps_proxy_without_prefetch_metadata() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", segment_cache_max_mb=0)
-    )
+    application = create_app(AppSettings(database_path=":memory:", segment_cache_max_mb=0))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver()
 
     with TestClient(application) as client:
@@ -156,9 +151,7 @@ def test_zero_segment_cache_capacity_keeps_proxy_without_prefetch_metadata() -> 
 
 
 def test_strm_url_is_stable_and_omits_proxy_setting() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", proxy_segments=False)
-    )
+    application = create_app(AppSettings(database_path=":memory:", proxy_segments=False))
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
         response = client.get(
@@ -190,9 +183,7 @@ def test_segment_response_is_cached_after_first_stream() -> None:
             request=request,
         )
 
-    upstream_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_http_client] = lambda: upstream_client
     params = {
@@ -242,9 +233,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection failed", request=request)
 
-    upstream_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_http_client] = lambda: upstream_client
 
@@ -253,10 +242,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
             response = client.get(
                 "/segment",
                 params={
-                    "url": (
-                        "https://vod.xl01.me/video.ts"
-                        f"?token={secret}"
-                    ),
+                    "url": (f"https://vod.xl01.me/video.ts?token={secret}"),
                     "referer": PAGE_URL,
                 },
             )
@@ -266,8 +252,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
     assert response.status_code == 502
     assert secret not in response.text
     assert response.json()["detail"] == (
-        "Upstream request failed: ConnectError for "
-        "https://vod.xl01.me/video.ts"
+        "Upstream request failed: ConnectError for https://vod.xl01.me/video.ts"
     )
 
 
@@ -308,10 +293,7 @@ def test_play_logs_decision_without_media_query_secret(
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver(
         tos_available=True,
-        direct_url=(
-            "https://p16-hera-sign-va.ibyteimg.com/obj/video"
-            "?token=must-not-be-logged"
-        ),
+        direct_url=("https://p16-hera-sign-va.ibyteimg.com/obj/video?token=must-not-be-logged"),
     )
     caplog.set_level(logging.INFO, logger="strm_proxy.routes")
 
@@ -340,9 +322,7 @@ def test_play_auto_falls_back_to_local_hls() -> None:
         )
 
     assert response.status_code == 302
-    assert response.headers["location"].startswith(
-        "http://192.168.1.20:8787/hls.m3u8?"
-    )
+    assert response.headers["location"].startswith("http://192.168.1.20:8787/hls.m3u8?")
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["v"][0]
 
@@ -365,6 +345,60 @@ def test_play_auto_explores_hls_when_direct_source_fails() -> None:
     assert resolver.direct_source_calls == ["tos"]
     assert resolver.working_hls_line_calls == 1
     assert "line=" not in response.headers["location"]
+
+
+@pytest.mark.parametrize(
+    ("tos_delay", "hls_delay", "expected_source"),
+    [
+        (0.05, 0.001, "hls"),
+        (0.001, 0.05, "tos"),
+    ],
+)
+def test_play_auto_races_tos_against_hls(
+    tos_delay: float,
+    hls_delay: float,
+    expected_source: str,
+) -> None:
+    class RacingResolver(_StubResolver):
+        def __init__(self) -> None:
+            super().__init__(
+                tos_available=True,
+                direct_url="https://tos.example/video.mp4",
+                healthy_hls_line=1,
+            )
+
+        async def benchmark_direct_media(self, page_url: str, source: str):
+            self.direct_source_calls.append(source)
+            await asyncio.sleep(tos_delay)
+            return await self.resolve_page(page_url), self.direct_url
+
+        async def find_working_hls_line(
+            self,
+            page_url: str,
+            preferred_line: int = 0,
+        ) -> int:
+            self.working_hls_line_calls += 1
+            await asyncio.sleep(hls_delay)
+            return self.healthy_hls_line
+
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = RacingResolver()
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        response = client.get(
+            "/play",
+            params={"page_url": PAGE_URL},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    if expected_source == "hls":
+        assert response.headers["location"].startswith("http://192.168.1.20:8787/hls.m3u8?")
+    else:
+        assert response.headers["location"] == "https://tos.example/video.mp4"
+    assert resolver.direct_source_calls == ["tos"]
+    assert resolver.working_hls_line_calls == 1
 
 
 def test_play_preserves_tos_then_member_source_priority() -> None:
@@ -395,7 +429,7 @@ def test_play_preserves_tos_then_member_source_priority() -> None:
     assert response.status_code == 302
     assert response.headers["location"] == "https://member.example/video.mp4"
     assert resolver.direct_source_calls == ["tos", "member"]
-    assert resolver.working_hls_line_calls == 0
+    assert resolver.working_hls_line_calls == 1
 
 
 def test_play_falls_back_to_first_healthy_hls_line() -> None:
@@ -475,7 +509,7 @@ def test_play_reuses_cached_member_direction_before_tos() -> None:
             assert response.status_code == 302
 
     assert resolver.direct_source_calls == ["tos", "member", "member"]
-    assert resolver.working_hls_line_calls == 0
+    assert resolver.working_hls_line_calls == 1
 
 
 def test_failed_cached_direction_is_invalidated_before_full_fallback() -> None:
@@ -621,9 +655,9 @@ def test_hls_redirects_old_revision_to_current_before_fetching_manifest() -> Non
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
         resolved = asyncio.run(resolver.resolve_page(PAGE_URL))
-        selection = get_app_services(
-            application
-        ).playback.cache.remember_hls(resolved, 1, manual_override=True)
+        selection = get_app_services(application).playback.cache.remember_hls(
+            resolved, 1, manual_override=True
+        )
         response = client.get(
             "/hls.m3u8",
             params={"page_url": PAGE_URL, "v": "stale"},
@@ -666,10 +700,77 @@ def test_hls_without_revision_redirects_to_current_revision() -> None:
     assert resolver.working_hls_line_calls == 1
 
 
+def test_duplicate_route_names_do_not_trigger_manifest_redirect_loop() -> None:
+    class DuplicateRouteResolver(_StubResolver):
+        async def resolve_page(self, page_url: str) -> ResolvedPage:
+            self.resolve_page_calls += 1
+            return ResolvedPage(
+                page_url=page_url,
+                pid=198045,
+                title="星期三 第二季",
+                candidates=(
+                    StreamCandidate(
+                        kind="m3u8",
+                        url="https://www.xlys02.com/first.m3u8#iplay",
+                    ),
+                    StreamCandidate(
+                        kind="m3u8_2",
+                        url="https://www.xlys02.com/second.m3u8#iplay",
+                    ),
+                ),
+                tos_available=False,
+            )
+
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = DuplicateRouteResolver(healthy_hls_line=1)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        play = client.get(
+            "/play",
+            params={"page_url": PAGE_URL},
+            follow_redirects=False,
+        )
+        manifest = client.get(
+            play.headers["location"],
+            follow_redirects=False,
+        )
+
+    assert play.status_code == 302
+    assert manifest.status_code == 200
+    assert resolver.working_hls_line_calls == 1
+    assert resolver.fetch_manifest_lines == [1]
+
+
+def test_explicit_hls_replaces_cached_direct_choice_for_manifest_stability() -> None:
+    application = create_app(AppSettings(database_path=":memory:"))
+    resolver = _StubResolver(tos_available=True, healthy_hls_line=1)
+    application.dependency_overrides[get_resolver] = lambda: resolver
+
+    with TestClient(application, base_url="http://192.168.1.20:8787") as client:
+        resolved = asyncio.run(resolver.resolve_page(PAGE_URL))
+        get_app_services(application).playback.cache.remember_direct(
+            resolved,
+            "tos",
+        )
+        play = client.get(
+            "/play",
+            params={"page_url": PAGE_URL, "source": "hls"},
+            follow_redirects=False,
+        )
+        manifest = client.get(
+            play.headers["location"],
+            follow_redirects=False,
+        )
+
+    assert play.status_code == 302
+    assert manifest.status_code == 200
+    assert resolver.working_hls_line_calls == 1
+    assert resolver.fetch_manifest_lines == [1]
+
+
 def test_hls_revision_is_stable_when_selection_cache_is_disabled() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", play_selection_cache=False)
-    )
+    application = create_app(AppSettings(database_path=":memory:", play_selection_cache=False))
     resolver = _StubResolver(healthy_hls_line=1)
     application.dependency_overrides[get_resolver] = lambda: resolver
 

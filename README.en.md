@@ -47,13 +47,19 @@ The first scan of the movie or TV folder may take a little longer while the libr
 
 | In the dashboard | What it does |
 | --- | --- |
-| **Sync Now (立即同步)** | Rediscovers movies and TV series and updates the automatic library. Kept and hidden titles, as well as recently watched series, follow their existing retention rules. |
+| **Sync a provider (单独同步)** | Discovers only the selected provider's movies and TV series. Each provider shows its title counts, last result, and time. Other providers are not requested or updated. |
+| **Sync All (同步全部)** | Updates XLYS and LIBVIO independently. Failed providers keep their existing titles. |
 | **Refresh Media (刷新影片)** | Reads that title's details again and updates its episodes if it is a TV series. |
+| **Add by URL (通过网址添加)** | Imports an XLYS or LIBVIO detail page and keeps the title in your library. |
 | **Refresh Recently Watched Series (刷新最近看过的电视剧)** | Checks series played through this service in the past 30 days and reports new episodes. |
 | **Keep / Hide (保留 / 隐藏)** | Kept titles stay through routine syncs; hidden titles do not appear in WebDAV. |
 | **Click a poster or title** | Opens details, episodes, source information, library controls, and playback source settings. |
 
-List and grid views support filtering, sorting, and pagination. TV cards show the number of episodes currently in the library. Sync runs when you choose **Sync Now**; it is not scheduled automatically.
+List and grid views support combined provider, media type, and library policy filters, title or year search, sorting, and pagination. TV cards show the number of episodes currently in the library. Choose a provider's **Sync** button or **Sync All** to update; sync is not scheduled automatically. Each provider's last result survives a service restart.
+
+Each provider discovers its 50 most recent titles and highly rated titles from the past four years (movie rating > 7, series rating > 8). LIBVIO titles must offer online playback; download-only listings are skipped. If a provider fails, its previous library is preserved while other providers continue syncing. The dashboard reports incomplete discovery.
+
+LIBVIO currently supports the verified ArtPlayer/SmartPlay MP4 flow, with the player accessing the video CDN directly. Online routes that only offer HLS are not supported yet. Discovery checks for online playback entries; media availability is verified when playback starts.
 
 ## If something goes wrong
 
@@ -65,3 +71,27 @@ List and grid views support filtering, sorting, and pagination. TV cards show th
 WebDAV is for browsing and reading titles; it does not support uploading, renaming, or deleting files. Change the default password before using the service on your LAN. Use HTTPS or a trusted private network across untrusted networks, and do not expose the service directly to the public internet. Only access content you are authorized to use.
 
 For port changes, source sign-in, playback proxy settings, and implementation details, see the [API and WebDAV reference](docs/api-reference.md), [playback resolution guide](docs/play-page-to-strm.md), and [data flow guide](docs/full-data-flow.md) (currently in Chinese).
+
+## Development checks
+
+Install the locked dependencies and run the same checks as CI:
+
+```powershell
+uv sync --locked --group dev
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked basedpyright
+uv run --locked pytest -q
+npm --prefix frontend ci
+npm --prefix frontend run lint
+npm --prefix frontend run format:check
+npm --prefix frontend run check
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Ruff checks and formats Python. Basedpyright uses `strict` for all production code in `strm_proxy`, with ordinary `# type: ignore` disabled and no diagnostic baseline. JSON is typed at the decoding boundary and its structure is validated before fields are used. `typings/` provides types for the PyCryptodome AES interfaces used by the adapters. Tests and live verification scripts are linted and formatted; test doubles are outside the strict type-check scope.
+
+The frontend uses ESLint, Prettier, Svelte/TypeScript checks, and Vitest. Format changes with `uv run ruff format .` and `npm --prefix frontend run format`. Apply safe lint fixes with `uv run ruff check --fix .` and `npm --prefix frontend run lint:fix`.
+
+GitHub Actions runs on pull requests, pushes to `master`, and manual dispatch. Python tests run on Ubuntu with 3.13/3.14 and Windows with 3.13; the frontend uses Node.js 22. Tests use temporary databases and mock upstreams, requiring no credentials, proxy, or live provider. Live verification tools under `scripts/` are run manually and are excluded from CI execution.

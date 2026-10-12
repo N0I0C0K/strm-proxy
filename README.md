@@ -47,13 +47,19 @@ uv run strm-proxy
 
 | 在网页中 | 会发生什么 |
 | --- | --- |
-| **立即同步** | 重新发现电影和电视剧，用结果更新自动片库。人工保留、隐藏内容及最近看过的电视剧按原有规则保留。 |
+| **供应商单独同步** | 只从选中的供应商发现电影和电视剧，显示该供应商的条目数量、上次结果和时间。其他供应商不会被请求或更新。 |
+| **同步全部** | 同时更新雪落影视和 LIBVIO 片库。各供应商独立执行；失败时保留原有条目。 |
 | **刷新影片** | 重新读取这部影片的详情；电视剧会更新分集。 |
+| **通过网址添加** | 粘贴雪落影视或 LIBVIO 的详情页，手动加入电影或电视剧，并设为人工保留。 |
 | **刷新最近看过的电视剧** | 检查近 30 天通过本服务播放过的电视剧，并显示新增集数。 |
 | **保留 / 隐藏** | 保留的影片不会被常规同步轮换掉；隐藏的影片不会出现在 WebDAV 中。 |
 | **点击封面或片名** | 查看详情、分集、来源信息，并调整收录或播放线路。 |
 
-列表与网格都支持筛选、排序和翻页。电视剧卡片会显示当前已收录的集数。片库不会定时同步，需要时点击 **立即同步**。
+列表与网格都支持按供应商、影片类型和片库策略筛选，也可以叠加片名或年份搜索、排序和翻页。电视剧卡片会显示当前已收录的集数。片库不会定时同步，需要时在 **供应商同步** 区单独同步，也可以选择 **同步全部**。供应商上次的结果会保存，重启服务后仍可查看。
+
+每个供应商分别发现最近 50 条，以及近 4 年的高分内容（电影评分 > 7，电视剧评分 > 8）。LIBVIO 只收录有在线播放线路的影片；仅有网盘下载的条目会跳过。某个供应商抓取失败时会保留其原有片库，其他供应商继续同步，管理页会显示未完成的部分。
+
+LIBVIO 当前支持已验证的 ArtPlayer/SmartPlay MP4 直连流程，视频由播放器直接访问 CDN；部分仅提供 HLS 的在线线路暂不支持。发现时检查在线播放入口，可播放性在实际播放时验证。
 
 ## 遇到问题
 
@@ -65,3 +71,27 @@ uv run strm-proxy
 WebDAV 只用于浏览和读取影片，不提供上传、改名或删除。服务默认监听本机及局域网地址，建议修改默认密码；跨不可信网络使用时请配置 HTTPS 或可信私有网络，不要将服务直接暴露到公网。请仅导入和播放你有权访问的内容。
 
 需要调整端口、来源登录、播放代理等设置，或了解接口和数据链路，请参阅 [API 与 WebDAV 文档](docs/api-reference.md)、[播放解析过程](docs/play-page-to-strm.md)和[完整数据链路](docs/full-data-flow.md)。
+
+## 开发与检查
+
+安装锁定依赖后，运行与 CI 相同的检查：
+
+```powershell
+uv sync --locked --group dev
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked basedpyright
+uv run --locked pytest -q
+npm --prefix frontend ci
+npm --prefix frontend run lint
+npm --prefix frontend run format:check
+npm --prefix frontend run check
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Python 使用 Ruff 检查和格式化。Basedpyright 对全部 `strm_proxy` 生产代码启用 `strict`，禁用普通 `# type: ignore`，不使用诊断基线。外部 JSON 在解码边界声明类型，并在使用字段前验证结构；`typings/` 补充 PyCryptodome AES 所用接口的类型。测试和现场验证脚本接受 lint、格式检查，测试替身不纳入严格类型检查。
+
+前端使用 ESLint、Prettier、Svelte/TypeScript 类型检查和 Vitest。需要自动修正格式时，运行 `uv run ruff format .` 和 `npm --prefix frontend run format`；lint 的安全修正可用 `uv run ruff check --fix .` 和 `npm --prefix frontend run lint:fix`。
+
+GitHub Actions 在 PR、推送 `master` 和手动触发时执行检查。Python 测试覆盖 Ubuntu 的 3.13/3.14 和 Windows 的 3.13；前端使用 Node.js 22。测试使用临时数据库与模拟上游，不需要登录信息、代理或在线供应商。`scripts/` 中的现场验证命令需手动运行，不进入 CI。

@@ -30,9 +30,7 @@ async def main() -> None:
                 recent_limit=settings.discovery_recent_limit,
                 year_span=settings.discovery_year_span,
                 movie_rating_threshold=settings.douban_rating_threshold,
-                series_rating_threshold=(
-                    settings.series_douban_rating_threshold
-                ),
+                series_rating_threshold=(settings.series_douban_rating_threshold),
                 cache_ttl_seconds=settings.catalog_cache_ttl_seconds,
             )
             library = MediaLibrary(repository, catalog)
@@ -40,10 +38,7 @@ async def main() -> None:
                 catalog.discover_movies(),
                 catalog.discover_series(),
             )
-            print(
-                f"Discovery complete: movies={len(movies)}, "
-                f"series={len(series)}"
-            )
+            print(f"Discovery complete: movies={len(movies)}, series={len(series)}")
 
             # The existing database is disposable test data. Delay the clear until
             # both discovery requests have completed so a network error is harmless.
@@ -52,10 +47,7 @@ async def main() -> None:
 
         stored_movies = repository.list_movies()
         stored_series = repository.list_visible_series()
-        episode_count = sum(
-            len(repository.list_episodes(item.xlys_id))
-            for item in stored_series
-        )
+        episode_count = sum(len(repository.list_episodes(item.xlys_id)) for item in stored_series)
         print(
             f"Import complete: movies={len(stored_movies)}, "
             f"series={len(stored_series)}, episodes={episode_count}"
