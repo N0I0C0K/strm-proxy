@@ -19,10 +19,13 @@ def test_decode_wrapped_manifest_rewrites_segments() -> None:
 
 def test_special_line_uses_hls_segment_directory() -> None:
     source = "#EXTM3U\nabc.ts\n"
-    assert decode_wrapped_manifest(
-        source.encode(),
-        "https://www.xlys02.com/a.m3u8#ac5634-us",
-    ) == "#EXTM3U\nhttps://vod.xl01.me/hls/abc.ts\n"
+    assert (
+        decode_wrapped_manifest(
+            source.encode(),
+            "https://www.xlys02.com/a.m3u8#ac5634-us",
+        )
+        == "#EXTM3U\nhttps://vod.xl01.me/hls/abc.ts\n"
+    )
 
 
 def test_finds_ts_inside_png_wrapper() -> None:
@@ -32,9 +35,10 @@ def test_finds_ts_inside_png_wrapper() -> None:
 
 
 def test_finds_first_variant_or_media_uri() -> None:
-    assert first_playlist_uri(
-        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhttps://cdn/a.m3u8\n"
-    ) == "https://cdn/a.m3u8"
+    assert (
+        first_playlist_uri("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhttps://cdn/a.m3u8\n")
+        == "https://cdn/a.m3u8"
+    )
 
 
 def test_aligned_ts_stream_drops_trailing_wrapper_bytes() -> None:

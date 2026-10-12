@@ -59,6 +59,7 @@ def test_webdav_root_lists_media_categories_and_keeps_legacy_strm_direct() -> No
         assert "proxy_segments" not in stream_file.text
         assert "source=" not in stream_file.text
 
+
 def test_webdav_movie_catalog_lists_and_serves_discovered_strm() -> None:
     movie = CatalogEntry(
         xlys_id=27078,
@@ -120,9 +121,7 @@ def test_webdav_to_versioned_hls_manifest_end_to_end() -> None:
                 "#EXTM3U\n#EXTINF:6,\nhttps://vod.xl01.me/current.ts\n",
             )
 
-    application = create_app(
-        AppSettings(database_path=":memory:", proxy_segments=False)
-    )
+    application = create_app(AppSettings(database_path=":memory:", proxy_segments=False))
     application.dependency_overrides[get_resolver] = HlsResolver
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:

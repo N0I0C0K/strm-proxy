@@ -19,9 +19,7 @@ _DETAIL_PATH_PATTERN = re.compile(r"^/[^/?#]+/(\d+)\.htm$")
 _YEAR_PATTERN = re.compile(r"^\s*((?:19|20)\d{2})")
 _RATING_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 _UPDATED_EPISODES_PATTERN = re.compile(r"(?:更至|更新至)\s*(\d+)\s*集")
-_COMPLETE_EPISODES_PATTERN = re.compile(
-    r"(?:全\s*(\d+)\s*集|(\d+)\s*集全)"
-)
+_COMPLETE_EPISODES_PATTERN = re.compile(r"(?:全\s*(\d+)\s*集|(\d+)\s*集全)")
 _INVALID_FILENAME_PATTERN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 logger = logging.getLogger(__name__)
@@ -81,9 +79,7 @@ class _MediaCardParser(HTMLParser):
             self._card["href"] = values.get("href") or ""
             self._card["description"] = values.get("title") or ""
         elif tag == "img" and "cover_url" not in self._card:
-            self._card["cover_url"] = (
-                values.get("data-src") or values.get("src") or ""
-            )
+            self._card["cover_url"] = values.get("data-src") or values.get("src") or ""
         elif tag == "h4":
             self._start_capture("title", tag)
         elif tag == "span" and self._meta_depth:
@@ -92,11 +88,7 @@ class _MediaCardParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if self._card is None:
             return
-        if (
-            self._capture
-            and self._capture_tag == tag
-            and self._capture_depth == self._card_depth
-        ):
+        if self._capture and self._capture_tag == tag and self._capture_depth == self._card_depth:
             self._card[self._capture] = "".join(self._text).strip()
             self._capture = None
             self._capture_tag = None
@@ -153,9 +145,7 @@ class XlysCatalog:
         self.series_rating_threshold = series_rating_threshold
         self.current_year = current_year or date.today().year
         self.request_interval_seconds = request_interval_seconds
-        self._cache = TTLCache[str, tuple[CatalogEntry, ...]](
-            cache_ttl_seconds
-        )
+        self._cache = TTLCache[str, tuple[CatalogEntry, ...]](cache_ttl_seconds)
         self._last_good: dict[int, tuple[CatalogEntry, ...]] = {}
         self._refresh_locks = {0: asyncio.Lock(), 1: asyncio.Lock()}
         self._request_lock = asyncio.Lock()
@@ -189,8 +179,7 @@ class XlysCatalog:
                 )
                 return cached
             logger.info(
-                "event=catalog_discovery_start kind=%s recent_limit=%d "
-                "year_span=%d",
+                "event=catalog_discovery_start kind=%s recent_limit=%d year_span=%d",
                 _media_type_label(media_type),
                 self.recent_limit,
                 self.year_span,
@@ -200,13 +189,10 @@ class XlysCatalog:
             except (httpx.HTTPError, ResolverError) as exc:
                 if previous := self._last_good.get(media_type):
                     detail = (
-                        describe_http_error(exc)
-                        if isinstance(exc, httpx.HTTPError)
-                        else str(exc)
+                        describe_http_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
                     )
                     logger.warning(
-                        "event=catalog_discovery_fallback kind=%s count=%d "
-                        "detail=%s",
+                        "event=catalog_discovery_fallback kind=%s count=%d detail=%s",
                         _media_type_label(media_type),
                         len(previous),
                         detail,
@@ -242,9 +228,7 @@ class XlysCatalog:
                 seen_ids.add(entry.xlys_id)
         if not combined:
             label = "series" if media_type == 1 else "movie"
-            raise ResolverError(
-                f"The xlys {label} discovery did not contain any media cards"
-            )
+            raise ResolverError(f"The xlys {label} discovery did not contain any media cards")
         return _deduplicate_filenames(tuple(combined))
 
     async def _fetch_recent(self, media_type: int) -> tuple[CatalogEntry, ...]:
@@ -280,11 +264,7 @@ class XlysCatalog:
         entries: list[CatalogEntry] = []
         seen_ids: set[int] = set()
         page = 1
-        threshold = (
-            self.series_rating_threshold
-            if media_type == 1
-            else self.movie_rating_threshold
-        )
+        threshold = self.series_rating_threshold if media_type == 1 else self.movie_rating_threshold
         while True:
             page_entries = await self._fetch_page(
                 media_type=media_type,
@@ -297,8 +277,7 @@ class XlysCatalog:
             above_threshold = tuple(
                 entry
                 for entry in page_entries
-                if entry.douban_rating is not None
-                and entry.douban_rating > threshold
+                if entry.douban_rating is not None and entry.douban_rating > threshold
             )
             qualifying = tuple(
                 entry
@@ -329,10 +308,7 @@ class XlysCatalog:
             params["year"] = year
         async with self._request_lock:
             loop = asyncio.get_running_loop()
-            remaining = (
-                self.request_interval_seconds
-                - (loop.time() - self._last_request_at)
-            )
+            remaining = self.request_interval_seconds - (loop.time() - self._last_request_at)
             if remaining > 0:
                 await asyncio.sleep(remaining)
             for attempt in range(6):
@@ -371,9 +347,7 @@ def _entry_from_card(
     year_match = _YEAR_PATTERN.match(description)
     release_year = int(year_match.group(1)) if year_match else None
     rating_match = _RATING_PATTERN.search(card.get("douban_rating", ""))
-    available_episode_count, declared_episode_count = _episode_counts(
-        description
-    )
+    available_episode_count, declared_episode_count = _episode_counts(description)
     return CatalogEntry(
         xlys_id=int(match.group(1)),
         title=title,
@@ -420,8 +394,7 @@ def _deduplicate_filenames(
         replace(
             entry,
             dav_filename=(
-                entry.dav_filename[:-5]
-                + f" [xlys-{entry.xlys_id}].strm"
+                entry.dav_filename[:-5] + f" [xlys-{entry.xlys_id}].strm"
                 if counts[entry.dav_filename.casefold()] > 1
                 else entry.dav_filename
             ),

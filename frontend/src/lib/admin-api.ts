@@ -6,7 +6,10 @@ export function basicCredentials(user: string, password: string): string {
 }
 
 export class AdminApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
     super(message)
     this.name = 'AdminApiError'
   }

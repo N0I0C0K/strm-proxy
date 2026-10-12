@@ -90,27 +90,21 @@ def test_extract_direct_candidates_keeps_signed_url3_slots() -> None:
 
 def test_direct_media_candidates_rewrite_tos_objects_to_playable_cdn() -> None:
     candidates = direct_media_url_candidates(
-        "https://p16-ulike-sg.ibyteimg.com/obj/"
-        "tos-alisg-v-0000/example-object"
+        "https://p16-ulike-sg.ibyteimg.com/obj/tos-alisg-v-0000/example-object"
     )
 
     assert candidates[0] == (
-        "https://p16-hera-sign-va.ibyteimg.com/obj/"
-        "tos-alisg-v-0000/example-object"
+        "https://p16-hera-sign-va.ibyteimg.com/obj/tos-alisg-v-0000/example-object"
     )
 
 
 def test_direct_media_candidates_accept_current_bytedance_tos_variant() -> None:
-    raw_url = (
-        "https://sf16-starling-sg.ibytedtos.com/obj/"
-        "tos-maliva-o-0000-us/example-object"
-    )
+    raw_url = "https://sf16-starling-sg.ibytedtos.com/obj/tos-maliva-o-0000-us/example-object"
 
     candidates = direct_media_url_candidates(raw_url)
 
     assert candidates == (
-        "https://p16-hera-sign-va.ibyteimg.com/obj/"
-        "tos-maliva-o-0000-us/example-object",
+        "https://p16-hera-sign-va.ibyteimg.com/obj/tos-maliva-o-0000-us/example-object",
         raw_url,
     )
 
@@ -151,9 +145,7 @@ def test_resolver_caches_page_and_manifest() -> None:
                 200,
                 json={
                     "code": 0,
-                    "data": {
-                        "m3u8": "https://www.xlys02.com/wrapped.m3u8#iplay"
-                    },
+                    "data": {"m3u8": "https://www.xlys02.com/wrapped.m3u8#iplay"},
                 },
             )
         if request.url.path == "/wrapped.m3u8":
@@ -210,10 +202,7 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
             return httpx.Response(
                 200,
                 json={
-                    "url": (
-                        "https://p16-ulike-sg.ibyteimg.com/obj/"
-                        "tos-alisg-v-0000/example-object"
-                    )
+                    "url": ("https://p16-ulike-sg.ibyteimg.com/obj/tos-alisg-v-0000/example-object")
                 },
             )
         if request.url.host == "p16-hera-sign-va.ibyteimg.com":
@@ -221,10 +210,7 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
             return httpx.Response(
                 206,
                 headers={"Content-Type": "video/mp4"},
-                content=(
-                    b"\x00\x00\x00\x20ftypisom"
-                    + b"x" * PLAYBACK_PROBE_BYTES
-                ),
+                content=(b"\x00\x00\x00\x20ftypisom" + b"x" * PLAYBACK_PROBE_BYTES),
             )
         return httpx.Response(404)
 
@@ -241,9 +227,7 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
 
         assert resolved.tos_available is True
         assert resolved.member_token == "888"
-        assert media_url.startswith(
-            "https://p16-hera-sign-va.ibyteimg.com/obj/"
-        )
+        assert media_url.startswith("https://p16-hera-sign-va.ibyteimg.com/obj/")
 
     asyncio.run(scenario())
     assert calls["/god/204486"] == 2
@@ -274,6 +258,7 @@ def test_member_source_requires_configured_login() -> None:
 
     asyncio.run(scenario())
 
+
 def test_member_source_requires_automatic_captcha_recognition() -> None:
     god_called = False
 
@@ -303,12 +288,8 @@ def test_member_source_requires_automatic_captcha_recognition() -> None:
 
 
 def test_resolver_counts_dynamic_lines_and_skips_unhealthy_hls() -> None:
-    wrapped_bad = b"x" * 3354 + gzip.compress(
-        b"#EXTM3U\n#EXTINF:6,\nbad.ts\n#EXT-X-ENDLIST\n"
-    )
-    wrapped_good = b"x" * 3354 + gzip.compress(
-        b"#EXTM3U\n#EXTINF:6,\ngood.ts\n#EXT-X-ENDLIST\n"
-    )
+    wrapped_bad = b"x" * 3354 + gzip.compress(b"#EXTM3U\n#EXTINF:6,\nbad.ts\n#EXT-X-ENDLIST\n")
+    wrapped_good = b"x" * 3354 + gzip.compress(b"#EXTM3U\n#EXTINF:6,\ngood.ts\n#EXT-X-ENDLIST\n")
     probed_segments: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -320,10 +301,7 @@ def test_resolver_counts_dynamic_lines_and_skips_unhealthy_hls() -> None:
                 json={
                     "code": 0,
                     "data": {
-                        "m3u8": (
-                            "https://www.xlys02.com/bad.m3u8,"
-                            "https://www.xlys02.com/good.m3u8"
-                        )
+                        "m3u8": ("https://www.xlys02.com/bad.m3u8,https://www.xlys02.com/good.m3u8")
                     },
                 },
             )
@@ -385,8 +363,7 @@ def test_resolver_can_prefer_raw_hls_segments(
                     "code": 0,
                     "data": {
                         "m3u8": (
-                            "https://www.xlys02.com/wrapped.m3u8,"
-                            "https://www.xlys02.com/raw.m3u8"
+                            "https://www.xlys02.com/wrapped.m3u8,https://www.xlys02.com/raw.m3u8"
                         )
                     },
                 },
@@ -438,8 +415,7 @@ def test_resolver_falls_back_to_first_wrapped_hls_line() -> None:
                     "code": 0,
                     "data": {
                         "m3u8": (
-                            "https://www.xlys02.com/first.m3u8,"
-                            "https://www.xlys02.com/second.m3u8"
+                            "https://www.xlys02.com/first.m3u8,https://www.xlys02.com/second.m3u8"
                         )
                     },
                 },

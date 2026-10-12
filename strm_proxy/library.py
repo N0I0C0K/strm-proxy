@@ -49,7 +49,9 @@ class MediaLibrary:
         self.last_discovery_failures: tuple[str, ...] = ()
         self._provider_locks = {"xlys": asyncio.Lock(), "libvio": asyncio.Lock()}
         self._sync_history = CacheRepository(repository.engine)
-        self.provider_sync_states = {source: self._load_sync_state(source) for source in ("xlys", "libvio")}
+        self.provider_sync_states = {
+            source: self._load_sync_state(source) for source in ("xlys", "libvio")
+        }
         self.recent_limit = catalog.recent_limit
         self._detail_concurrency = detail_concurrency
         self._detail_request_interval_seconds = detail_request_interval_seconds
@@ -63,20 +65,33 @@ class MediaLibrary:
                 value = json.loads(raw)
                 if value["status"] in {"success", "partial", "failed"}:
                     failures = value["failures"]
-                    if isinstance(failures, list) and all(isinstance(item, str) for item in failures):
-                        return ProviderSyncState(value["status"], datetime.fromisoformat(value["last_synced_at"]),
-                                                 tuple(failures))
+                    if isinstance(failures, list) and all(
+                        isinstance(item, str) for item in failures
+                    ):
+                        return ProviderSyncState(
+                            value["status"],
+                            datetime.fromisoformat(value["last_synced_at"]),
+                            tuple(failures),
+                        )
             except (ValueError, KeyError, TypeError):
                 pass
         return ProviderSyncState()
 
     def _finish_sync(self, provider: str, state: ProviderSyncState) -> None:
         self.provider_sync_states[provider] = state
-        self._sync_history.set(f"provider-sync:{provider}", json.dumps({
-            "status": state.status,
-            "last_synced_at": state.last_synced_at.isoformat() if state.last_synced_at else None,
-            "failures": state.failures,
-        }, ensure_ascii=False))
+        self._sync_history.set(
+            f"provider-sync:{provider}",
+            json.dumps(
+                {
+                    "status": state.status,
+                    "last_synced_at": state.last_synced_at.isoformat()
+                    if state.last_synced_at
+                    else None,
+                    "failures": state.failures,
+                },
+                ensure_ascii=False,
+            ),
+        )
 
     async def visible_movies(self) -> tuple[MediaItem, ...]:
         await self._bootstrap_movies_if_empty()
@@ -87,11 +102,7 @@ class MediaLibrary:
         filename: str,
     ) -> MediaItem | None:
         return next(
-            (
-                movie
-                for movie in await self.visible_movies()
-                if movie.dav_name == filename
-            ),
+            (movie for movie in await self.visible_movies() if movie.dav_name == filename),
             None,
         )
 
@@ -127,15 +138,10 @@ class MediaLibrary:
     ) -> None:
         """Persist a completed discovery snapshot as the new automatic catalog."""
         series_details = await self._fetch_series_details(
-            tuple(
-                entry
-                for entry in series_entries
-                if entry.available_episode_count is None
-            )
+            tuple(entry for entry in series_entries if entry.available_episode_count is None)
         )
         logger.info(
-            "event=library_import_discovery movies=%d series=%d "
-            "series_details=%d",
+            "event=library_import_discovery movies=%d series=%d series_details=%d",
             len(movies),
             len(series_entries),
             len(series_details),
@@ -167,25 +173,31 @@ class MediaLibrary:
         )
         return visible
 
-    async def _sync_kinds(self, kinds: tuple[str, ...], *, provider: Provider | None = None) -> None:
+    async def _sync_kinds(
+        self, kinds: tuple[str, ...], *, provider: Provider | None = None
+    ) -> None:
         async def sync_xlys(kind: str) -> tuple[str, ...]:
             if kind == "movie":
                 entries = await self.catalog.discover_movies()
                 self.repository.import_discovered_movies(entries, replace_auto=True)
             else:
                 entries = await self.catalog.discover_series()
-                details = await self._fetch_series_details(tuple(
-                    entry for entry in entries if entry.available_episode_count is None
-                ))
+                details = await self._fetch_series_details(
+                    tuple(entry for entry in entries if entry.available_episode_count is None)
+                )
                 self.repository.import_discovered_series(entries, details, replace_auto=True)
             return ()
 
         async def sync_libvio(kind: str) -> tuple[str, ...]:
             assert self.libvio_catalog is not None
-            result = await (self.libvio_catalog.discover_movies() if kind == "movie"
-                            else self.libvio_catalog.discover_series())
-            self.repository.import_discovered_libvio(result.details, kind=kind,
-                                                      replace_auto=result.complete)
+            result = await (
+                self.libvio_catalog.discover_movies()
+                if kind == "movie"
+                else self.libvio_catalog.discover_series()
+            )
+            self.repository.import_discovered_libvio(
+                result.details, kind=kind, replace_auto=result.complete
+            )
             return result.failures
 
         available = ("xlys", "libvio") if self.libvio_catalog is not None else ("xlys",)
@@ -196,36 +208,56 @@ class MediaLibrary:
         async def sync_provider(source: str) -> tuple[int, tuple[str, ...]]:
             async with self._provider_locks[source]:
                 previous = self.provider_sync_states[source]
-                self.provider_sync_states[source] = ProviderSyncState("syncing", previous.last_synced_at)
+                self.provider_sync_states[source] = ProviderSyncState(
+                    "syncing", previous.last_synced_at
+                )
                 name = "雪落影视" if source == "xlys" else "LIBVIO"
                 sync = sync_xlys if source == "xlys" else sync_libvio
-                results = await asyncio.gather(*(sync(kind) for kind in kinds), return_exceptions=True)
+                results = await asyncio.gather(
+                    *(sync(kind) for kind in kinds), return_exceptions=True
+                )
                 failures: list[str] = []
                 completed = 0
                 for kind, result in zip(kinds, results):
                     if isinstance(result, (httpx.HTTPError, ResolverError)):
                         label = "电影" if kind == "movie" else "电视剧"
                         failures.append(f"{name}{label}发现失败，已保留原有条目")
-                        logger.warning("event=library_discovery_failed provider=%s kind=%s", source, kind)
+                        logger.warning(
+                            "event=library_discovery_failed provider=%s kind=%s", source, kind
+                        )
                     elif isinstance(result, BaseException):
-                        self._finish_sync(source, ProviderSyncState(
-                            "failed", datetime.now(timezone.utc), (f"{name}同步失败",),
-                        ))
+                        self._finish_sync(
+                            source,
+                            ProviderSyncState(
+                                "failed",
+                                datetime.now(timezone.utc),
+                                (f"{name}同步失败",),
+                            ),
+                        )
                         raise result
                     else:
                         completed += 1
                         failures.extend(result)
                 status = "success" if not failures else "partial" if completed else "failed"
-                self._finish_sync(source, ProviderSyncState(
-                    status, datetime.now(timezone.utc), tuple(failures),
-                ))
+                self._finish_sync(
+                    source,
+                    ProviderSyncState(
+                        status,
+                        datetime.now(timezone.utc),
+                        tuple(failures),
+                    ),
+                )
                 return completed, tuple(failures)
 
-        results = await asyncio.gather(*(sync_provider(source) for source in selected), return_exceptions=True)
+        results = await asyncio.gather(
+            *(sync_provider(source) for source in selected), return_exceptions=True
+        )
         for result in results:
             if isinstance(result, BaseException):
                 raise result
-        self.last_discovery_failures = tuple(failure for _, failures in results for failure in failures)
+        self.last_discovery_failures = tuple(
+            failure for _, failures in results for failure in failures
+        )
         if not any(completed for completed, _ in results):
             raise ResolverError("；".join(self.last_discovery_failures))
 
@@ -296,9 +328,8 @@ class MediaLibrary:
             async with semaphore:
                 async with pace_lock:
                     loop = asyncio.get_running_loop()
-                    remaining = (
-                        self._detail_request_interval_seconds
-                        - (loop.time() - last_request_at)
+                    remaining = self._detail_request_interval_seconds - (
+                        loop.time() - last_request_at
                     )
                     if remaining > 0:
                         await asyncio.sleep(remaining)
@@ -311,9 +342,7 @@ class MediaLibrary:
                     )
                 except (httpx.HTTPError, ResolverError) as exc:
                     detail = (
-                        describe_http_error(exc)
-                        if isinstance(exc, httpx.HTTPError)
-                        else str(exc)
+                        describe_http_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
                     )
                     logger.warning(
                         "event=series_detail_failed xlys_id=%d source=%s detail=%s",

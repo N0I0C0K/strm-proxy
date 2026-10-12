@@ -41,7 +41,10 @@
         <div>
           <Dialog.Title>选择播放线路</Dialog.Title>
           <Dialog.Description>
-            {media ? `《${media.title}》` : '影片'}的播放来源取自网站；{routes?.media_kind === 'series' ? '选择后应用于整部剧，每集重新获取对应来源。' : '选择后会覆盖该影片的自动选择。'}
+            {media ? `《${media.title}》` : '影片'}的播放来源取自网站；{routes?.media_kind ===
+            'series'
+              ? '选择后应用于整部剧，每集重新获取对应来源。'
+              : '选择后会覆盖该影片的自动选择。'}
           </Dialog.Description>
         </div>
       </div>
@@ -54,7 +57,8 @@
         <div class="route-status">
           <span class:manual={routes.manual_override}></span>
           <strong>{currentSummary(routes)}</strong>
-          {#if routes.media_kind === 'series'}<small>列表取自第 1 集；固定后作用于整部剧</small>{/if}
+          {#if routes.media_kind === 'series'}<small>列表取自第 1 集；固定后作用于整部剧</small
+            >{/if}
         </div>
 
         <div class="route-options" aria-label="可用播放线路">
@@ -75,7 +79,9 @@
           {/each}
         </div>
 
-        <p class="route-note">HLS 按线路名称匹配；直连线路按序号匹配。会员线路需要验证码，暂不能固定。</p>
+        <p class="route-note">
+          HLS 按线路名称匹配；直连线路按序号匹配。会员线路需要验证码，暂不能固定。
+        </p>
 
         {#if !routes.cache_enabled}
           <p class="form-error route-error">播放决策缓存已由环境变量关闭，无法保存人工线路。</p>

@@ -14,10 +14,20 @@
     <AlertDialog.Content class="confirm-dialog">
       <div class="dialog-icon"><Trash2 size={20} /></div>
       <AlertDialog.Title>删除 {count} 部影片？</AlertDialog.Title>
-      <AlertDialog.Description>这些记录会从 SQLite 中删除。如果影片仍在来源最新列表，下次同步时可能再次出现；如需长期排除，请使用“隐藏”。</AlertDialog.Description>
+      <AlertDialog.Description
+        >这些记录会从 SQLite
+        中删除。如果影片仍在来源最新列表，下次同步时可能再次出现；如需长期排除，请使用“隐藏”。</AlertDialog.Description
+      >
       <div class="dialog-actions">
         <AlertDialog.Cancel disabled={busy}>取消</AlertDialog.Cancel>
-        <AlertDialog.Action class="confirm-delete" onclick={(event) => { event.preventDefault(); onDelete() }} disabled={busy}>
+        <AlertDialog.Action
+          class="confirm-delete"
+          onclick={(event) => {
+            event.preventDefault()
+            onDelete()
+          }}
+          disabled={busy}
+        >
           {#if busy}<LoaderCircle class="spin" size={16} />{/if}确认删除
         </AlertDialog.Action>
       </div>

@@ -22,30 +22,40 @@ from strm_proxy.models import ResolverError
 
 def _detail_html(source_id, *, series=False, download=False, count=2):
     label = "视频下载" if download else "HD7播放"
-    episodes = "".join(f'<li><a href="/play/{source_id}-4-{index}.html">{f"第{index}集" if series else "HD中字"}</a></li>'
-                       for index in range(1, (count if series else 1) + 1))
-    return (f'<h1 class="title">影片{source_id}</h1><p class="data">年份：2026</p>'
-            f'<p class="data">类型：{"海外剧" if series else "剧情"}</p>'
-            f'<p class="data">总集数：{12 if series else 0}</p>'
-            f'<h3>{label}</h3><ul class="stui-content__playlist">{episodes}</ul>')
+    episodes = "".join(
+        f'<li><a href="/play/{source_id}-4-{index}.html">{f"第{index}集" if series else "HD中字"}</a></li>'
+        for index in range(1, (count if series else 1) + 1)
+    )
+    return (
+        f'<h1 class="title">影片{source_id}</h1><p class="data">年份：2026</p>'
+        f'<p class="data">类型：{"海外剧" if series else "剧情"}</p>'
+        f'<p class="data">总集数：{12 if series else 0}</p>'
+        f'<h3>{label}</h3><ul class="stui-content__playlist">{episodes}</ul>'
+    )
 
 
 def _detail(source_id, *, series=False, count=2):
-    return parse_libvio_detail(_detail_html(source_id, series=series, count=count),
-                              source_url=f"https://www.libvio.lat/detail/{source_id}.html")
+    return parse_libvio_detail(
+        _detail_html(source_id, series=series, count=count),
+        source_url=f"https://www.libvio.lat/detail/{source_id}.html",
+    )
 
 
 def _listing(entries, next_path=None):
-    cards = "".join(f'<li><a class="stui-vodlist__thumb lazyload" href="/detail/{source_id}.html" '
-                    f'title="影片{source_id}"><span class="pic-tag">{rating}</span></a></li>'
-                    for source_id, rating in entries)
+    cards = "".join(
+        f'<li><a class="stui-vodlist__thumb lazyload" href="/detail/{source_id}.html" '
+        f'title="影片{source_id}"><span class="pic-tag">{rating}</span></a></li>'
+        for source_id, rating in entries
+    )
     paging = f'<a href="{next_path}">下一页</a>' if next_path else ""
     return f'<ul class="stui-vodlist clearfix">{cards}</ul>{paging}'
 
 
 def test_list_reads_cards_rating_and_next_link_ignoring_sidebar():
-    parsed = parse_libvio_list(_listing([(5813847, 8.1)], "/show/1--time------2---.html") +
-                              '<a class="stui-vodlist__thumb" href="/detail/99.html">侧栏推荐</a>')
+    parsed = parse_libvio_list(
+        _listing([(5813847, 8.1)], "/show/1--time------2---.html")
+        + '<a class="stui-vodlist__thumb" href="/detail/99.html">侧栏推荐</a>'
+    )
     assert len(parsed.cards) == 1
     assert parsed.cards[0].source_media_id == "5813847"
     assert parsed.cards[0].rating == 8.1
@@ -63,7 +73,9 @@ def test_discovery_pages_recent_and_unions_rated_years_deduplicating_details():
         if path.startswith("/detail/"):
             return httpx.Response(200, text=_detail_html(path.split("/")[-1].split(".")[0]))
         if path == "/show/1--time---------.html":
-            return httpx.Response(200, text=_listing([(900, 0), (20260, 8.4)], "/show/1--time------2---.html"))
+            return httpx.Response(
+                200, text=_listing([(900, 0), (20260, 8.4)], "/show/1--time------2---.html")
+            )
         if path == "/show/1--time------2---.html":
             return httpx.Response(200, text=_listing([(902, 0), (903, 0)]))
         year = path.removesuffix(".html").split("-")[-1]
@@ -72,8 +84,9 @@ def test_discovery_pages_recent_and_unions_rated_years_deduplicating_details():
 
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            catalog = LibvioCatalog(client, recent_limit=3, year_span=2, current_year=2026,
-                                    request_interval_seconds=0)
+            catalog = LibvioCatalog(
+                client, recent_limit=3, year_span=2, current_year=2026, request_interval_seconds=0
+            )
             first = await catalog.discover_movies()
             assert await catalog.discover_movies() is first
             return first
@@ -119,39 +132,62 @@ def test_download_only_is_excluded_but_detail_failure_marks_snapshot_incomplete_
 def test_series_uses_strict_above_eight_and_imports_online_episode_numbers():
     def handle(request):
         if request.url.path.startswith("/detail/"):
-            return httpx.Response(200, text=_detail_html(request.url.path.split("/")[-1].split(".")[0], series=True))
+            return httpx.Response(
+                200, text=_detail_html(request.url.path.split("/")[-1].split(".")[0], series=True)
+            )
         entries = [(900, 0)] if "time" in request.url.path else [(901, 8.1), (902, 8.0)]
         assert request.url.path.startswith("/show/2--")
         return httpx.Response(200, text=_listing(entries))
 
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await LibvioCatalog(client, recent_limit=1, year_span=1, current_year=2026,
-                                       request_interval_seconds=0).discover_series()
+            return await LibvioCatalog(
+                client, recent_limit=1, year_span=1, current_year=2026, request_interval_seconds=0
+            ).discover_series()
 
     result = asyncio.run(scenario())
-    assert result.complete and {detail.public_media_id for detail in result.details} == {"900", "901"}
-    assert all([episode.source_index for episode in detail.episodes] == [0, 1] for detail in result.details)
+    assert result.complete and {detail.public_media_id for detail in result.details} == {
+        "900",
+        "901",
+    }
+    assert all(
+        [episode.source_index for episode in detail.episodes] == [0, 1] for detail in result.details
+    )
 
 
 def test_movie_with_multiple_quality_entries_is_not_a_series():
-    html = _detail_html(1).replace('</li></ul>', '</li><li><a href="/play/1-4-2.html">高清版</a></li></ul>')
-    assert parse_libvio_detail(html, source_url="https://www.libvio.lat/detail/1.html").kind == "movie"
+    html = _detail_html(1).replace(
+        "</li></ul>", '</li><li><a href="/play/1-4-2.html">高清版</a></li></ul>'
+    )
+    assert (
+        parse_libvio_detail(html, source_url="https://www.libvio.lat/detail/1.html").kind == "movie"
+    )
 
 
 def test_new_series_with_one_episode_and_unknown_total_is_a_series():
-    html = _detail_html(1, series=True, count=1).replace("总集数：12", "总集数：0").replace("海外剧", "剧情,日本")
+    html = (
+        _detail_html(1, series=True, count=1)
+        .replace("总集数：12", "总集数：0")
+        .replace("海外剧", "剧情,日本")
+    )
     detail = parse_libvio_detail(html, source_url="https://www.libvio.lat/detail/1.html")
     assert detail.kind == "series" and len(detail.episodes) == 1
 
 
 def test_discovery_category_takes_precedence_over_ambiguous_episode_labels():
     html = _detail_html(1).replace("HD中字", "第1集")
-    assert parse_libvio_detail(html, source_url="https://www.libvio.lat/detail/1.html", kind_hint="movie").kind == "movie"
+    assert (
+        parse_libvio_detail(
+            html, source_url="https://www.libvio.lat/detail/1.html", kind_hint="movie"
+        ).kind
+        == "movie"
+    )
 
 
-@pytest.mark.parametrize("bad_next", ["https://evil.example/show/1--time------2---.html",
-                                     "/show/2--time------2---.html", "repeat"])
+@pytest.mark.parametrize(
+    "bad_next",
+    ["https://evil.example/show/1--time------2---.html", "/show/2--time------2---.html", "repeat"],
+)
 def test_bad_pagination_aborts_without_accepting_partial_snapshot(bad_next):
     def handle(request):
         next_url = "/show/1--time------2---.html" if bad_next == "repeat" else bad_next
@@ -160,8 +196,9 @@ def test_bad_pagination_aborts_without_accepting_partial_snapshot(bad_next):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             with pytest.raises(ResolverError):
-                await LibvioCatalog(client, recent_limit=3, year_span=0,
-                                    request_interval_seconds=0).discover_movies()
+                await LibvioCatalog(
+                    client, recent_limit=3, year_span=0, request_interval_seconds=0
+                ).discover_movies()
 
     asyncio.run(scenario())
 
@@ -169,17 +206,29 @@ def test_bad_pagination_aborts_without_accepting_partial_snapshot(bad_next):
 def test_automatic_snapshot_preserves_policies_ids_names_and_other_provider(tmp_path):
     path = str(tmp_path / "library.db")
     repository = create_media_repository(path)
-    xlys = CatalogEntry(xlys_id=1, title="影片1", year=2026, cover_url=None,
-                        source_updated_on="2026-10-01", dav_filename="影片1 (2026).strm")
+    xlys = CatalogEntry(
+        xlys_id=1,
+        title="影片1",
+        year=2026,
+        cover_url=None,
+        source_updated_on="2026-10-01",
+        dav_filename="影片1 (2026).strm",
+    )
     repository.import_discovered_movies((xlys,))
     kept = repository.import_libvio_detail(_detail(1))
     hidden = repository.import_libvio_detail(_detail(2))
     repository.set_media_policy(hidden.xlys_id, MoviePolicy.HIDDEN)
     repository.import_discovered_libvio((_detail(3), _detail(4)), kind="movie")
-    ids = {item.source_media_id: item.xlys_id for item in repository.list_media() if item.provider == "libvio"}
+    ids = {
+        item.source_media_id: item.xlys_id
+        for item in repository.list_media()
+        if item.provider == "libvio"
+    }
     assert kept.dav_name.endswith("[libvio-1].strm")
     assert repository.get_media(ids["3"]).policy == "auto"
-    repository.import_discovered_libvio((_detail(1), _detail(2), replace(_detail(3), title="新标题")), kind="movie")
+    repository.import_discovered_libvio(
+        (_detail(1), _detail(2), replace(_detail(3), title="新标题")), kind="movie"
+    )
     assert repository.get_media(ids["4"]) is None
     assert repository.get_media(kept.xlys_id).policy == "keep"
     assert repository.get_media(hidden.xlys_id).policy == "hidden"
@@ -202,12 +251,16 @@ def test_automatic_snapshot_preserves_policies_ids_names_and_other_provider(tmp_
 def test_series_snapshot_refreshes_episodes_and_preserves_recently_watched():
     repository = create_media_repository(":memory:")
     try:
-        repository.import_discovered_libvio(tuple(_detail(source_id, series=True) for source_id in (1, 2, 3)), kind="series")
+        repository.import_discovered_libvio(
+            tuple(_detail(source_id, series=True) for source_id in (1, 2, 3)), kind="series"
+        )
         records = {item.source_media_id: item for item in repository.list_media()}
         repository.mark_series_watched("https://www.libvio.lat/play/2-4-2.html")
         with repository.engine.begin() as connection:
-            connection.execute(text("UPDATE media_items SET last_watched_at=:date WHERE source_media_id='3'"),
-                               {"date": datetime.now(timezone.utc) - timedelta(days=31)})
+            connection.execute(
+                text("UPDATE media_items SET last_watched_at=:date WHERE source_media_id='3'"),
+                {"date": datetime.now(timezone.utc) - timedelta(days=31)},
+            )
         repository.import_discovered_libvio((_detail(1, series=True, count=3),), kind="series")
         assert len(repository.list_episodes(records["1"].xlys_id)) == 3
         assert repository.get_media(records["2"].xlys_id) is not None
@@ -280,8 +333,12 @@ def test_admin_sync_adds_both_kinds_webdav_and_reports_partial_provider_failure(
         assert parse_qs(urlsplit(result.text.strip()).query)["page_url"] == [movie["play_page_url"]]
         series = next(item for item in catalog["movies"] if item["source_media_id"] == "2")
         assert series["available_episode_count"] == 2
-        listing = client.request("PROPFIND", "/dav/电视剧/" + quote(series["dav_filename"]) + "/Season 01/",
-                                 auth=("demo", "demo"), headers={"Depth": "1"})
+        listing = client.request(
+            "PROPFIND",
+            "/dav/电视剧/" + quote(series["dav_filename"]) + "/Season 01/",
+            auth=("demo", "demo"),
+            headers={"Depth": "1"},
+        )
         assert listing.status_code == 207 and "S01E02.strm" in listing.text
 
 
@@ -311,10 +368,18 @@ def test_supplier_sync_is_authenticated_validated_and_only_calls_selected_provid
         libvio = _LibvioStub()
         services.media_library.catalog = xlys
         services.media_library.libvio_catalog = libvio
-        services.media_repository.import_discovered_movies((CatalogEntry(
-            xlys_id=10, title="旧供应商影片", year=2026, cover_url=None,
-            source_updated_on="2026-10-01", dav_filename="旧供应商影片.strm",
-        ),))
+        services.media_repository.import_discovered_movies(
+            (
+                CatalogEntry(
+                    xlys_id=10,
+                    title="旧供应商影片",
+                    year=2026,
+                    cover_url=None,
+                    source_updated_on="2026-10-01",
+                    dav_filename="旧供应商影片.strm",
+                ),
+            )
+        )
         auth = ("demo", "demo")
         assert client.post("/api/admin/sync?provider=libvio").status_code == 401
         assert client.post("/api/admin/sync?provider=unknown", auth=auth).status_code == 422

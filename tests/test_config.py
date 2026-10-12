@@ -193,9 +193,7 @@ def test_settings_read_upstream_proxy_from_environment(
         "http://127.0.0.1:7890",
     )
 
-    assert AppSettings.from_environment().upstream_proxy == (
-        "http://127.0.0.1:7890"
-    )
+    assert AppSettings.from_environment().upstream_proxy == ("http://127.0.0.1:7890")
 
 
 def test_upstream_client_uses_system_proxy_without_override(
@@ -206,7 +204,10 @@ def test_upstream_client_uses_system_proxy_without_override(
     app = create_app(AppSettings(database_path=":memory:"))
     with TestClient(app):
         client = get_app_services(app).http
-        assert client._transport_for_url(httpx.URL("https://example.invalid/")) is not client._transport
+        assert (
+            client._transport_for_url(httpx.URL("https://example.invalid/"))
+            is not client._transport
+        )
 
 
 def test_control_and_media_requests_use_independent_connection_pools() -> None:
@@ -223,9 +224,7 @@ def test_upstream_proxy_override_replaces_system_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:18081")
-    app = create_app(AppSettings(
-        database_path=":memory:", upstream_proxy="http://127.0.0.1:18082"
-    ))
+    app = create_app(AppSettings(database_path=":memory:", upstream_proxy="http://127.0.0.1:18082"))
     with TestClient(app):
         client = get_app_services(app).http
         assert client._transport_for_url(httpx.URL("https://example.invalid/")) is client._transport

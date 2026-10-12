@@ -38,7 +38,9 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/resolve")
-async def resolve(resolver: ResolverDep, libvio: LibvioResolverDep, page_url: str = Query(...)) -> dict:
+async def resolve(
+    resolver: ResolverDep, libvio: LibvioResolverDep, page_url: str = Query(...)
+) -> dict:
     if is_libvio_url(page_url):
         return {"provider": "libvio", "source": "direct", **asdict(await libvio.resolve(page_url))}
     resolved = await resolver.resolve_page(page_url)
@@ -88,12 +90,17 @@ async def play(
 ) -> RedirectResponse:
     if is_libvio_url(page_url):
         if source != "auto":
-            raise HTTPException(status_code=400, detail="LIBVIO currently supports automatic direct MP4 playback")
+            raise HTTPException(
+                status_code=400, detail="LIBVIO currently supports automatic direct MP4 playback"
+            )
         result = await libvio.resolve(page_url)
         if request.method == "GET":
             repository.mark_series_watched(result.play_page_url)
-        logger.info("event=play_selected provider=libvio mode=direct route=%s episode=%d",
-                    result.route_name, result.episode_number)
+        logger.info(
+            "event=play_selected provider=libvio mode=direct route=%s episode=%d",
+            result.route_name,
+            result.episode_number,
+        )
         return _no_store_redirect(result.media_url)
     logger.info(
         "event=play_request page=%s source=%s",
@@ -120,22 +127,18 @@ async def play(
             assert selection.line is not None
             assert selection.revision is not None
             logger.info(
-                "event=play_selected pid=%d mode=hls line=%d route=%s "
-                "line_count=%d strategy=%s",
+                "event=play_selected pid=%d mode=hls line=%d route=%s line_count=%d strategy=%s",
                 result.resolved.pid,
                 selection.line,
                 selection.route_name,
                 len(result.resolved.candidates),
                 "selection_cache" if result.cache_hit else "explored",
             )
-            return _no_store_redirect(
-                build_manifest_url(request, page_url, selection.revision)
-            )
+            return _no_store_redirect(build_manifest_url(request, page_url, selection.revision))
 
         assert result.media_url is not None
         logger.info(
-            "event=play_selected pid=%d mode=direct source=%s target=%s "
-            "strategy=%s",
+            "event=play_selected pid=%d mode=direct source=%s target=%s strategy=%s",
             result.resolved.pid,
             selection.source,
             safe_url_for_log(result.media_url),
@@ -167,9 +170,7 @@ async def play(
             len(result.resolved.candidates),
             "selection_cache" if result.cache_hit else "server_selected",
         )
-        return _no_store_redirect(
-            build_manifest_url(request, page_url, selection.revision)
-        )
+        return _no_store_redirect(build_manifest_url(request, page_url, selection.revision))
 
     resolved = await resolver.resolve_page(page_url)
     if source in {"tos", "member"}:
@@ -227,17 +228,14 @@ async def hls_manifest(
     resolved = result.resolved
     if v != selection.revision:
         logger.info(
-            "event=hls_version_redirected pid=%d line=%d route=%s "
-            "requested=%s current=%s",
+            "event=hls_version_redirected pid=%d line=%d route=%s requested=%s current=%s",
             resolved.pid,
             line,
             selection.route_name,
             v,
             selection.revision,
         )
-        return _no_store_redirect(
-            build_manifest_url(request, page_url, selection.revision)
-        )
+        return _no_store_redirect(build_manifest_url(request, page_url, selection.revision))
     try:
         _resolved, candidate, manifest = await resolver.fetch_manifest(
             page_url=page_url,
@@ -280,8 +278,7 @@ async def hls_manifest(
             segment_builder,
         )
     logger.info(
-        "event=hls_manifest_served pid=%s line=%d route=%s playlist=%s "
-        "proxy_segments=%s bytes=%d",
+        "event=hls_manifest_served pid=%s line=%d route=%s playlist=%s proxy_segments=%s bytes=%d",
         getattr(_resolved, "pid", "unknown"),
         line,
         selection.route_name,
@@ -347,9 +344,7 @@ async def proxy_segment(
 
     current = segment_cache.current_segment(referer, index)
     if current is not None and (
-        playlist != current.playlist_id
-        or v != current.revision
-        or url != current.url
+        playlist != current.playlist_id or v != current.revision or url != current.url
     ):
         target = request.url_for("proxy_segment").include_query_params(
             url=current.url,
@@ -411,8 +406,7 @@ async def proxy_segment(
     )
     upstream_request = client.build_request(request.method, url, headers=headers)
     logger.debug(
-        "event=segment_upstream_request target=%s referer=%s range=%s "
-        "accept=%s user_agent=%r",
+        "event=segment_upstream_request target=%s referer=%s range=%s accept=%s user_agent=%r",
         safe_url_for_log(upstream_request.url),
         safe_url_for_log(referer) if referer else None,
         upstream_request.headers.get("range"),
@@ -444,9 +438,7 @@ async def proxy_segment(
         time.perf_counter() - upstream_started,
     )
     response_headers = {
-        name: value
-        for name, value in upstream.headers.items()
-        if name.lower() == "cache-control"
+        name: value for name, value in upstream.headers.items() if name.lower() == "cache-control"
     }
     if request.method == "HEAD":
         await upstream.aclose()

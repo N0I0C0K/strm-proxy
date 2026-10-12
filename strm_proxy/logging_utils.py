@@ -49,10 +49,7 @@ def configure_logging(level: str, file_path: str | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     access_logger = logging.getLogger("uvicorn.access")
-    if not any(
-        isinstance(item, _UvicornAccessQueryFilter)
-        for item in access_logger.filters
-    ):
+    if not any(isinstance(item, _UvicornAccessQueryFilter) for item in access_logger.filters):
         access_logger.addFilter(_UvicornAccessQueryFilter())
 
 
@@ -62,9 +59,7 @@ def _configure_file_handler(
     level: int,
 ) -> None:
     configured_handlers = [
-        handler
-        for handler in logger.handlers
-        if getattr(handler, "_strm_proxy_log_file", False)
+        handler for handler in logger.handlers if getattr(handler, "_strm_proxy_log_file", False)
     ]
     if file_path is None:
         for handler in configured_handlers:

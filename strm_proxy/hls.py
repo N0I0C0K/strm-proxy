@@ -43,8 +43,7 @@ def decode_wrapped_manifest(payload: bytes, source_url: str) -> str:
     if not decoded.lstrip().startswith("#EXTM3U"):
         raise ResolverError("Decoded response is not an HLS manifest")
     logger.debug(
-        "event=manifest_payload_decoded source=%s mode=%s input_bytes=%d "
-        "decoded_bytes=%d",
+        "event=manifest_payload_decoded source=%s mode=%s input_bytes=%d decoded_bytes=%d",
         safe_url_for_log(source_url),
         wrapper_mode,
         len(payload),
@@ -163,10 +162,7 @@ async def iter_aligned_mpeg_ts(
 
             packet_count = len(pending) // TS_PACKET_SIZE
             valid_count = 0
-            while (
-                valid_count < packet_count
-                and pending[valid_count * TS_PACKET_SIZE] == 0x47
-            ):
+            while valid_count < packet_count and pending[valid_count * TS_PACKET_SIZE] == 0x47:
                 valid_count += 1
             if valid_count == 0:
                 return

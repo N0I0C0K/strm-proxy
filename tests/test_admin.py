@@ -38,35 +38,59 @@ def test_credentials_change_updates_admin_and_webdav_and_survives_restart(tmp_pa
     with TestClient(application) as client:
         assert client.get("/api/admin/credentials", headers=_auth()).json() == {"username": "demo"}
         rejected = client.put(
-            "/api/admin/credentials", headers=_auth(),
+            "/api/admin/credentials",
+            headers=_auth(),
             json={"username": "media", "current_password": "wrong", "password": "new-secret-123"},
         )
         assert rejected.status_code == 403
         response = client.put(
-            "/api/admin/credentials", headers=_auth(),
+            "/api/admin/credentials",
+            headers=_auth(),
             json={"username": "media", "current_password": "demo", "password": "new-secret-123"},
         )
         assert response.status_code == 200
         assert response.json() == {"username": "media"}
         assert client.get("/api/admin/credentials", headers=_auth()).status_code == 401
-        assert client.get("/api/admin/credentials", headers=_credentials("media", "new-secret-123")).status_code == 200
+        assert (
+            client.get(
+                "/api/admin/credentials", headers=_credentials("media", "new-secret-123")
+            ).status_code
+            == 200
+        )
         assert client.get("/dav/", headers=_auth()).status_code == 401
-        assert client.get("/dav/", headers=_credentials("media", "new-secret-123")).status_code == 200
+        assert (
+            client.get("/dav/", headers=_credentials("media", "new-secret-123")).status_code == 200
+        )
 
     with sqlite3.connect(database_path) as connection:
-        row = connection.execute("SELECT username, salt, password_hash FROM access_credentials").fetchone()
+        row = connection.execute(
+            "SELECT username, salt, password_hash FROM access_credentials"
+        ).fetchone()
     assert row is not None
     assert row[0] == "media"
     assert len(row[1]) == 32
     assert len(row[2]) == 64
     assert "new-secret-123" not in str(row)
 
-    restarted = create_app(AppSettings(
-        database_path=str(database_path), dav=DavSettings(username="bootstrap", password="ignored")
-    ))
+    restarted = create_app(
+        AppSettings(
+            database_path=str(database_path),
+            dav=DavSettings(username="bootstrap", password="ignored"),
+        )
+    )
     with TestClient(restarted) as client:
-        assert client.get("/api/admin/credentials", headers=_credentials("media", "new-secret-123")).status_code == 200
-        assert client.get("/api/admin/credentials", headers=_credentials("bootstrap", "ignored")).status_code == 401
+        assert (
+            client.get(
+                "/api/admin/credentials", headers=_credentials("media", "new-secret-123")
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(
+                "/api/admin/credentials", headers=_credentials("bootstrap", "ignored")
+            ).status_code
+            == 401
+        )
 
 
 def _movie() -> CatalogEntry:
@@ -96,9 +120,7 @@ def test_admin_api_requires_authentication() -> None:
     with TestClient(application) as client:
         response = client.get("/api/admin/movies")
         assert response.status_code == 401
-        assert response.headers["www-authenticate"] == (
-            'Basic realm="strm-proxy admin"'
-        )
+        assert response.headers["www-authenticate"] == ('Basic realm="strm-proxy admin"')
 
 
 def test_admin_lists_movies_and_updates_policy() -> None:
@@ -118,9 +140,7 @@ def test_admin_lists_movies_and_updates_policy() -> None:
             "series": 0,
         }
         assert payload["movies"][0]["kind"] == "movie"
-        assert payload["movies"][0]["cover_url"] == (
-            "https://img.example/27078.jpg"
-        )
+        assert payload["movies"][0]["cover_url"] == ("https://img.example/27078.jpg")
 
         update = client.patch(
             "/api/admin/movies/27078/policy",
@@ -129,10 +149,7 @@ def test_admin_lists_movies_and_updates_policy() -> None:
         )
         assert update.status_code == 200
         assert update.json()["policy"] == "keep"
-        assert (
-            get_app_services(application).media_repository.get_movie(27078).policy
-            == "keep"
-        )
+        assert get_app_services(application).media_repository.get_movie(27078).policy == "keep"
 
 
 def test_admin_batch_updates_and_deletes_movies() -> None:
@@ -239,14 +256,17 @@ def test_admin_can_select_named_playback_route_and_restore_auto() -> None:
         )
         assert cleared.status_code == 200
         assert cleared.json()["cleared"] is True
-        assert services.playback.cache.get(
-            ResolvedPage(
-                page_url=cleared.json()["page_url"],
-                pid=204486,
-                title="阳光女子合唱团",
-                candidates=resolver.candidates,
+        assert (
+            services.playback.cache.get(
+                ResolvedPage(
+                    page_url=cleared.json()["page_url"],
+                    pid=204486,
+                    title="阳光女子合唱团",
+                    candidates=resolver.candidates,
+                )
             )
-        ) is None
+            is None
+        )
         assert resolver.refreshes == [True, False, True]
 
 
@@ -266,8 +286,7 @@ def test_admin_lists_all_nine_sources_and_can_pin_direct_route() -> None:
                     for i in range(4)
                 ),
                 direct_candidates=tuple(
-                    StreamCandidate("url3", f"https://cdn.example/direct{i}")
-                    for i in range(3)
+                    StreamCandidate("url3", f"https://cdn.example/direct{i}") for i in range(3)
                 ),
                 tos_available=True,
                 member_token="member",
@@ -284,13 +303,18 @@ def test_admin_lists_all_nine_sources_and_can_pin_direct_route() -> None:
         assert routes.status_code == 200
         assert len(routes.json()["routes"]) == 9
         assert [route["kind"] for route in routes.json()["routes"][4:]] == [
-            "url3", "url3", "url3", "tos", "member",
+            "url3",
+            "url3",
+            "url3",
+            "tos",
+            "member",
         ]
         assert routes.json()["routes"][-1]["selectable"] is False
 
         selected = client.put(
             "/api/admin/media/27078/playback-routes",
-            headers=_auth(), json={"route_name": "url3:1"},
+            headers=_auth(),
+            json={"route_name": "url3:1"},
         )
         assert selected.status_code == 200
         assert selected.json()["selected_route_key"] == "url3:1"
@@ -318,7 +342,9 @@ def test_admin_manual_movie_import_keeps_movie() -> None:
         )
 
     application = create_app(AppSettings(database_path=":memory:"))
-    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle), cookies={"username": "test-user"})
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handle), cookies={"username": "test-user"}
+    )
     application.dependency_overrides[get_control_http_client] = lambda: mock_client
 
     def reject_media_pool():
@@ -339,9 +365,7 @@ def test_admin_manual_movie_import_keeps_movie() -> None:
             stored = get_app_services(application).media_repository.get_movie(27101)
             assert stored is not None
             assert stored.policy == "keep"
-            assert stored.source_updated_on == datetime(
-                2026, 8, 28, tzinfo=timezone.utc
-            ).date()
+            assert stored.source_updated_on == datetime(2026, 8, 28, tzinfo=timezone.utc).date()
     finally:
         asyncio.run(mock_client.aclose())
 
@@ -430,9 +454,7 @@ def test_admin_series_route_applies_to_every_episode_and_restores_auto() -> None
                     for name in names
                 ),
                 tos_available=True,
-                direct_candidates=(
-                    StreamCandidate("url3", f"https://cdn.example/{index}-direct"),
-                ),
+                direct_candidates=(StreamCandidate("url3", f"https://cdn.example/{index}-direct"),),
             )
 
     application = create_app(AppSettings(database_path=":memory:"))
@@ -449,7 +471,8 @@ def test_admin_series_route_applies_to_every_episode_and_restores_auto() -> None
 
         selected = client.put(
             "/api/admin/media/27085/playback-routes",
-            headers=_auth(), json={"route_name": "iplay"},
+            headers=_auth(),
+            json={"route_name": "iplay"},
         )
         assert selected.status_code == 200
         assert selected.json()["manual_override"] is True
@@ -462,16 +485,15 @@ def test_admin_series_route_applies_to_every_episode_and_restores_auto() -> None
         assert episode_selection.route_name == "iplay"
         assert episode_selection.line == 0
 
-        cleared = client.delete(
-            "/api/admin/media/27085/playback-routes", headers=_auth()
-        )
+        cleared = client.delete("/api/admin/media/27085/playback-routes", headers=_auth())
         assert cleared.status_code == 200
         assert cleared.json()["page_url"] == first
         assert services.playback.cache.get(second_page) is None
 
         direct = client.put(
             "/api/admin/media/27085/playback-routes",
-            headers=_auth(), json={"route_name": "url3:0"},
+            headers=_auth(),
+            json={"route_name": "url3:0"},
         )
         assert direct.status_code == 200
         direct_selection = services.playback.cache.get(second_page)
@@ -491,18 +513,25 @@ def test_existing_first_episode_choice_migrates_to_whole_series(tmp_path) -> Non
         services.media_repository.import_discovered_series((entry,), (detail,))
         services.playback.cache.remember_hls(
             ResolvedPage(
-                page_url=first, pid=204374, title="测试剧",
+                page_url=first,
+                pid=204374,
+                title="测试剧",
                 candidates=(StreamCandidate("m3u8", "https://cdn.example/a.m3u8#iplay"),),
             ),
-            0, manual_override=True,
+            0,
+            manual_override=True,
         )
 
     with TestClient(create_app(settings)) as client:
         services = get_app_services(client.app)
-        selection = services.playback.cache.get(ResolvedPage(
-            page_url=second, pid=204375, title="测试剧",
-            candidates=(StreamCandidate("m3u8", "https://cdn.example/b.m3u8#iplay"),),
-        ))
+        selection = services.playback.cache.get(
+            ResolvedPage(
+                page_url=second,
+                pid=204375,
+                title="测试剧",
+                candidates=(StreamCandidate("m3u8", "https://cdn.example/b.m3u8#iplay"),),
+            )
+        )
         assert selection is not None
         assert selection.source == "hls"
         assert selection.manual_override is True
@@ -559,18 +588,20 @@ def test_admin_refreshes_movie_without_changing_policy_or_dav_name() -> None:
         with TestClient(application) as client:
             repository = get_app_services(application).media_repository
             repository.import_discovered_movies((_movie(),))
-            assert client.post(
-                "/api/admin/media/27078/refresh", headers=_auth()
-            ).status_code == 409
-            repository.import_discovered_movies((CatalogEntry(
-                xlys_id=27078,
-                title="原名",
-                year=2025,
-                cover_url=None,
-                source_updated_on="2026-09-01",
-                dav_filename="原名 (2025).strm",
-                source_url="https://www.xlys02.com/juqing/27078.htm",
-            ),))
+            assert client.post("/api/admin/media/27078/refresh", headers=_auth()).status_code == 409
+            repository.import_discovered_movies(
+                (
+                    CatalogEntry(
+                        xlys_id=27078,
+                        title="原名",
+                        year=2025,
+                        cover_url=None,
+                        source_updated_on="2026-09-01",
+                        dav_filename="原名 (2025).strm",
+                        source_url="https://www.xlys02.com/juqing/27078.htm",
+                    ),
+                )
+            )
             repository.set_movie_policy(27078, MoviePolicy.KEEP)
             original_name = repository.get_movie(27078).dav_name
             result = client.post("/api/admin/media/27078/refresh", headers=_auth())
@@ -604,12 +635,15 @@ def test_recent_series_refresh_uses_successful_get_playback_only() -> None:
         if request.url.path.endswith("27086.htm"):
             return httpx.Response(500)
         assert request.url.path.endswith("27085.htm")
-        return httpx.Response(200, text="""
+        return httpx.Response(
+            200,
+            text="""
             <h1 class="movie-title">测试剧27085 (2026)</h1>
             <a class="play-item" href="/play/27085-0.htm">第1集</a>
             <a class="play-item" href="/play/27085-1.htm">第2集</a>
             <a class="play-item" href="/play/27085-2.htm">第3集</a>
-        """)
+        """,
+        )
 
     application = create_app(AppSettings(database_path=":memory:"))
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
@@ -625,9 +659,19 @@ def test_recent_series_refresh_uses_successful_get_playback_only() -> None:
             repository.import_discovered_movies((_movie(),))
             for xlys_id in (27085, 27086):
                 play_url = f"https://www.xlys02.com/play/{xlys_id}-0.htm"
-                assert client.head("/play", params={"page_url": play_url}, follow_redirects=False).status_code == 302
+                assert (
+                    client.head(
+                        "/play", params={"page_url": play_url}, follow_redirects=False
+                    ).status_code
+                    == 302
+                )
                 assert repository.get_series(xlys_id).last_watched_at is None
-                assert client.get("/play", params={"page_url": play_url}, follow_redirects=False).status_code == 302
+                assert (
+                    client.get(
+                        "/play", params={"page_url": play_url}, follow_redirects=False
+                    ).status_code
+                    == 302
+                )
             assert len(repository.recently_watched_series()) == 2
             catalog = client.get("/api/admin/media", headers=_auth()).json()
             assert catalog["recently_watched_series_count"] == 2

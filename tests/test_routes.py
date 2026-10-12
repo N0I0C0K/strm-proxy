@@ -120,9 +120,7 @@ def test_hls_uses_global_proxy_setting_and_ignores_query_override(
     query_override: str,
     expects_proxy: bool,
 ) -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", proxy_segments=configured)
-    )
+    application = create_app(AppSettings(database_path=":memory:", proxy_segments=configured))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver()
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
@@ -141,9 +139,7 @@ def test_hls_uses_global_proxy_setting_and_ignores_query_override(
 
 
 def test_zero_segment_cache_capacity_keeps_proxy_without_prefetch_metadata() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", segment_cache_max_mb=0)
-    )
+    application = create_app(AppSettings(database_path=":memory:", segment_cache_max_mb=0))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver()
 
     with TestClient(application) as client:
@@ -156,9 +152,7 @@ def test_zero_segment_cache_capacity_keeps_proxy_without_prefetch_metadata() -> 
 
 
 def test_strm_url_is_stable_and_omits_proxy_setting() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", proxy_segments=False)
-    )
+    application = create_app(AppSettings(database_path=":memory:", proxy_segments=False))
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
         response = client.get(
@@ -190,9 +184,7 @@ def test_segment_response_is_cached_after_first_stream() -> None:
             request=request,
         )
 
-    upstream_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_http_client] = lambda: upstream_client
     params = {
@@ -242,9 +234,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection failed", request=request)
 
-    upstream_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler)
-    )
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_http_client] = lambda: upstream_client
 
@@ -253,10 +243,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
             response = client.get(
                 "/segment",
                 params={
-                    "url": (
-                        "https://vod.xl01.me/video.ts"
-                        f"?token={secret}"
-                    ),
+                    "url": (f"https://vod.xl01.me/video.ts?token={secret}"),
                     "referer": PAGE_URL,
                 },
             )
@@ -266,8 +253,7 @@ def test_segment_upstream_error_response_redacts_query_parameters() -> None:
     assert response.status_code == 502
     assert secret not in response.text
     assert response.json()["detail"] == (
-        "Upstream request failed: ConnectError for "
-        "https://vod.xl01.me/video.ts"
+        "Upstream request failed: ConnectError for https://vod.xl01.me/video.ts"
     )
 
 
@@ -308,10 +294,7 @@ def test_play_logs_decision_without_media_query_secret(
     application = create_app(AppSettings(database_path=":memory:"))
     application.dependency_overrides[get_resolver] = lambda: _StubResolver(
         tos_available=True,
-        direct_url=(
-            "https://p16-hera-sign-va.ibyteimg.com/obj/video"
-            "?token=must-not-be-logged"
-        ),
+        direct_url=("https://p16-hera-sign-va.ibyteimg.com/obj/video?token=must-not-be-logged"),
     )
     caplog.set_level(logging.INFO, logger="strm_proxy.routes")
 
@@ -340,9 +323,7 @@ def test_play_auto_falls_back_to_local_hls() -> None:
         )
 
     assert response.status_code == 302
-    assert response.headers["location"].startswith(
-        "http://192.168.1.20:8787/hls.m3u8?"
-    )
+    assert response.headers["location"].startswith("http://192.168.1.20:8787/hls.m3u8?")
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["v"][0]
 
@@ -414,9 +395,7 @@ def test_play_auto_races_tos_against_hls(
 
     assert response.status_code == 302
     if expected_source == "hls":
-        assert response.headers["location"].startswith(
-            "http://192.168.1.20:8787/hls.m3u8?"
-        )
+        assert response.headers["location"].startswith("http://192.168.1.20:8787/hls.m3u8?")
     else:
         assert response.headers["location"] == "https://tos.example/video.mp4"
     assert resolver.direct_source_calls == ["tos"]
@@ -677,9 +656,9 @@ def test_hls_redirects_old_revision_to_current_before_fetching_manifest() -> Non
 
     with TestClient(application, base_url="http://192.168.1.20:8787") as client:
         resolved = asyncio.run(resolver.resolve_page(PAGE_URL))
-        selection = get_app_services(
-            application
-        ).playback.cache.remember_hls(resolved, 1, manual_override=True)
+        selection = get_app_services(application).playback.cache.remember_hls(
+            resolved, 1, manual_override=True
+        )
         response = client.get(
             "/hls.m3u8",
             params={"page_url": PAGE_URL, "v": "stale"},
@@ -792,9 +771,7 @@ def test_explicit_hls_replaces_cached_direct_choice_for_manifest_stability() -> 
 
 
 def test_hls_revision_is_stable_when_selection_cache_is_disabled() -> None:
-    application = create_app(
-        AppSettings(database_path=":memory:", play_selection_cache=False)
-    )
+    application = create_app(AppSettings(database_path=":memory:", play_selection_cache=False))
     resolver = _StubResolver(healthy_hls_line=1)
     application.dependency_overrides[get_resolver] = lambda: resolver
 

@@ -46,9 +46,13 @@ def validate_page_url(url: str) -> str:
     try:
         parsed = urlsplit(url.strip())
         valid = (
-            parsed.scheme == "https" and parsed.hostname in LIBVIO_HOSTS
-            and parsed.username is None and parsed.password is None
-            and parsed.port in {None, 443} and not parsed.query and not parsed.fragment
+            parsed.scheme == "https"
+            and parsed.hostname in LIBVIO_HOSTS
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in {None, 443}
+            and not parsed.query
+            and not parsed.fragment
             and (DETAIL_PATH.fullmatch(parsed.path) or PLAY_PATH.fullmatch(parsed.path))
         )
     except ValueError:
@@ -91,11 +95,15 @@ class DetailParser(HTMLParser):
             self._start_capture("heading")
         elif tag == "ul" and "stui-content__playlist" in classes:
             self._playlist = True
-            self.routes.append({
-                "label": self._heading,
-                "type": "download" if "下载" in self._heading or "网盘" in self._heading else "online",
-                "episodes": [],
-            })
+            self.routes.append(
+                {
+                    "label": self._heading,
+                    "type": "download"
+                    if "下载" in self._heading or "网盘" in self._heading
+                    else "online",
+                    "episodes": [],
+                }
+            )
         elif tag == "a" and self._playlist:
             path = values.get("href") or ""
             if PLAY_PATH.fullmatch(path):
@@ -123,10 +131,15 @@ class DetailParser(HTMLParser):
             elif self._play_path:
                 match = PLAY_PATH.fullmatch(self._play_path)
                 assert match is not None
-                self.routes[-1]["episodes"].append({
-                    "label": value, "play_path": self._play_path,
-                    "public_media_id": match[1], "sid": int(match[2]), "nid": int(match[3]),
-                })
+                self.routes[-1]["episodes"].append(
+                    {
+                        "label": value,
+                        "play_path": self._play_path,
+                        "public_media_id": match[1],
+                        "sid": int(match[2]),
+                        "nid": int(match[3]),
+                    }
+                )
             self._capture = None
             self._text = []
         if tag == "ul":
@@ -168,7 +181,10 @@ class LibvioDetail:
 
 
 def parse_libvio_detail(
-    html: str, *, source_url: str, kind_hint: Literal["movie", "series"] | None = None,
+    html: str,
+    *,
+    source_url: str,
+    kind_hint: Literal["movie", "series"] | None = None,
 ) -> LibvioDetail:
     source_url = validate_page_url(source_url)
     match = DETAIL_PATH.fullmatch(urlsplit(source_url).path)
@@ -184,7 +200,9 @@ def parse_libvio_detail(
         for episode in route["episodes"]:
             if episode["public_media_id"] == match[1] and episode["nid"] > 0:
                 index = episode["nid"] - 1
-                episodes.setdefault(index, LibvioEpisode(index, episode["label"], episode["play_path"]))
+                episodes.setdefault(
+                    index, LibvioEpisode(index, episode["label"], episode["play_path"])
+                )
     if not parser.title:
         raise ResolverError("LIBVIO 详情页没有影片标题")
     if not episodes:
@@ -194,11 +212,22 @@ def parse_libvio_detail(
     count = re.search(r"总集数\s*[：:]\s*(\d+)", info)
     updated = re.search(r"最后更新\s*[：:]\s*(\d{4}-\d{2}-\d{2})", info)
     declared = int(count[1]) if count and int(count[1]) > 0 else None
-    series_type = re.search(r"类型\s*[：:][^\n]*(?:国产剧|港台剧|日韩剧|海外剧|电视剧|连续剧)", info)
+    series_type = re.search(
+        r"类型\s*[：:][^\n]*(?:国产剧|港台剧|日韩剧|海外剧|电视剧|连续剧)", info
+    )
     # Movies can have several quality/version entries on one online route.
     # New series may also declare zero until their total is known.
-    numbered_episode = any(re.search(r"第\s*\d+\s*集", episode.label) for episode in episodes.values())
-    kind = "series" if series_type or numbered_episode or (declared or 0) > 1 or (count is None and max(episodes) > 0) else "movie"
+    numbered_episode = any(
+        re.search(r"第\s*\d+\s*集", episode.label) for episode in episodes.values()
+    )
+    kind = (
+        "series"
+        if series_type
+        or numbered_episode
+        or (declared or 0) > 1
+        or (count is None and max(episodes) > 0)
+        else "movie"
+    )
     # The site's movie/series classification is authoritative when discovered
     # from its lists. Some movie versions are even labelled "第1集".
     if kind_hint is not None:
@@ -207,11 +236,17 @@ def parse_libvio_detail(
     if cover and urlsplit(cover).scheme not in {"http", "https"}:
         cover = None
     return LibvioDetail(
-        public_media_id=match[1], kind=kind, title=parser.title,
-        year=int(year[1]) if year else None, season_number=parse_season_number(parser.title),
-        cover_url=cover, douban_rating=parser.douban_rating, declared_episode_count=declared,
+        public_media_id=match[1],
+        kind=kind,
+        title=parser.title,
+        year=int(year[1]) if year else None,
+        season_number=parse_season_number(parser.title),
+        cover_url=cover,
+        douban_rating=parser.douban_rating,
+        declared_episode_count=declared,
         episodes=tuple(episodes[index] for index in sorted(episodes)),
-        source_updated_on=updated[1] if updated else None, source_url=source_url,
+        source_updated_on=updated[1] if updated else None,
+        source_url=source_url,
     )
 
 
@@ -219,7 +254,7 @@ def player_data(html: str) -> dict:
     match = re.search(r"\bvar\s+player_aaaa\s*=\s*", html)
     if not match:
         raise ResolverError("LIBVIO player data was not found")
-    value, _ = json.JSONDecoder().raw_decode(html[match.end():])
+    value, _ = json.JSONDecoder().raw_decode(html[match.end() :])
     if not isinstance(value, dict):
         raise ResolverError("LIBVIO player data is invalid")
     return value
@@ -229,7 +264,7 @@ def constant(html: str, name: str):
     match = re.search(rf"\bconst\s+{re.escape(name)}\s*=\s*", html)
     if not match:
         raise ResolverError(f"LIBVIO player is missing {name}")
-    value, _ = json.JSONDecoder().raw_decode(html[match.end():])
+    value, _ = json.JSONDecoder().raw_decode(html[match.end() :])
     return value
 
 
@@ -249,11 +284,14 @@ def _validate_media_url(url: str) -> str:
     parsed = urlsplit(url)
     host = parsed.hostname or ""
     if (
-        parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
         or parsed.port not in {None, 443}
-        or not (host in MEDIA_HOSTS or any(
-            host == suffix or host.endswith("." + suffix) for suffix in MEDIA_HOST_SUFFIXES
-        ))
+        or not (
+            host in MEDIA_HOSTS
+            or any(host == suffix or host.endswith("." + suffix) for suffix in MEDIA_HOST_SUFFIXES)
+        )
     ):
         raise ResolverError("LIBVIO returned an unsupported media CDN URL")
     return url
@@ -274,14 +312,23 @@ class LibvioPlayback:
 class LibvioResolver:
     """Resolve the observed ArtPlayer MP4 flow without proxying video bytes."""
 
-    def __init__(self, client: httpx.AsyncClient, media_client: httpx.AsyncClient, *, cache_ttl_seconds: float = 60) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        media_client: httpx.AsyncClient,
+        *,
+        cache_ttl_seconds: float = 60,
+    ) -> None:
         self.client = client
         self.media_client = media_client
         self.cache: TTLCache[str, LibvioPlayback] = TTLCache(min(cache_ttl_seconds, 60))
         self._lock = asyncio.Lock()
 
     async def fetch_detail(
-        self, page_url: str, *, kind_hint: Literal["movie", "series"] | None = None,
+        self,
+        page_url: str,
+        *,
+        kind_hint: Literal["movie", "series"] | None = None,
     ) -> LibvioDetail:
         page_url = validate_page_url(page_url)
         if DETAIL_PATH.fullmatch(urlsplit(page_url).path) is None:
@@ -334,10 +381,16 @@ class LibvioResolver:
                 except (httpx.HTTPError, ResolverError, ValueError, KeyError, TypeError) as exc:
                     # Signed URLs and encrypted page parameters stay out of logs.
                     errors.append(f"{route_name}: {type(exc).__name__}")
-                    logger.info("event=libvio_route_failed route=%s error=%s", route_name, type(exc).__name__)
+                    logger.info(
+                        "event=libvio_route_failed route=%s error=%s",
+                        route_name,
+                        type(exc).__name__,
+                    )
             raise ResolverError("LIBVIO online routes failed: " + "; ".join(errors))
 
-    async def _resolve_episode(self, page_url: str, origin: str, title: str, route_name: str, episode: dict) -> LibvioPlayback:
+    async def _resolve_episode(
+        self, page_url: str, origin: str, title: str, route_name: str, episode: dict
+    ) -> LibvioPlayback:
         play_url = urljoin(origin, episode["play_path"])
         response = await self.client.get(play_url)
         response.raise_for_status()
@@ -349,9 +402,13 @@ class LibvioResolver:
         adapter.raise_for_status()
         if "/static/player/artplayer/" not in adapter.text:
             raise ResolverError(f"Unsupported LIBVIO player adapter: {source}")
-        iframe = await self.client.get(f"{origin}/static/player/artplayer/", params={
-            "url": player["url"], "next": "",
-        })
+        iframe = await self.client.get(
+            f"{origin}/static/player/artplayer/",
+            params={
+                "url": player["url"],
+                "next": "",
+            },
+        )
         iframe.raise_for_status()
         timestamp = constant(iframe.text, "timestamp")
         lookup_scheme = "embedded"
@@ -360,11 +417,14 @@ class LibvioResolver:
             body = {
                 "vkey": constant(iframe.text, "playPageUrl"),
                 "code": constant(iframe.text, "secretKeySeed"),
-                "t": now, "signature": hashlib.md5(str(now).encode()).hexdigest(),
+                "t": now,
+                "signature": hashlib.md5(str(now).encode()).hexdigest(),
             }
             headers = {"Origin": origin, "Referer": origin + "/"}
             try:
-                response = await self.client.post(SMARTPLAY_API, json=body, headers=headers, follow_redirects=False)
+                response = await self.client.post(
+                    SMARTPLAY_API, json=body, headers=headers, follow_redirects=False
+                )
                 lookup_scheme = "https"
             except httpx.ConnectError as exc:
                 if "WRONG_VERSION_NUMBER" not in str(exc):
@@ -373,12 +433,20 @@ class LibvioResolver:
                 # compatibility path to plaintext-in-TLS failures; certificate
                 # verification errors and other URLs must never be downgraded.
                 logger.info("event=libvio_lookup_http_compatibility")
-                response = await self.client.post(SMARTPLAY_API.replace("https://", "http://", 1),
-                                                  json=body, headers=headers, follow_redirects=False)
+                response = await self.client.post(
+                    SMARTPLAY_API.replace("https://", "http://", 1),
+                    json=body,
+                    headers=headers,
+                    follow_redirects=False,
+                )
                 lookup_scheme = "http"
             response.raise_for_status()
             data = response.json()
-            if not isinstance(data, dict) or data.get("code") not in {None, 0, 200} or not data.get("url"):
+            if (
+                not isinstance(data, dict)
+                or data.get("code") not in {None, 0, 200}
+                or not data.get("url")
+            ):
                 raise ResolverError("LIBVIO video lookup did not return a URL")
             values = [data["url"]]
         else:
@@ -391,18 +459,28 @@ class LibvioResolver:
                 except (ResolverError, ValueError):
                     continue
                 if await self._probe(candidate):
-                    return LibvioPlayback(page_url, play_url, title, episode["public_media_id"],
-                                          route_name, episode["nid"], candidate, lookup_scheme)
+                    return LibvioPlayback(
+                        page_url,
+                        play_url,
+                        title,
+                        episode["public_media_id"],
+                        route_name,
+                        episode["nid"],
+                        candidate,
+                        lookup_scheme,
+                    )
         raise ResolverError("LIBVIO did not return a readable MP4 stream")
 
     async def _probe(self, url: str) -> bool:
         try:
-            async with self.media_client.stream("GET", url, headers={"Range": "bytes=0-63"}, follow_redirects=False) as response:
+            async with self.media_client.stream(
+                "GET", url, headers={"Range": "bytes=0-63"}, follow_redirects=False
+            ) as response:
                 if response.status_code not in {200, 206}:
                     return False
                 prefix = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=64):
-                    prefix.extend(chunk[:64 - len(prefix)])
+                    prefix.extend(chunk[: 64 - len(prefix)])
                     if len(prefix) >= 64:
                         break
                 return b"ftyp" in prefix[:32]

@@ -199,9 +199,7 @@ def update_credentials(
     _auth: AdminAuthDep,
     repository: MediaRepositoryDep,
 ) -> CredentialsView:
-    if not repository.change_credentials(
-        update.current_password, update.username, update.password
-    ):
+    if not repository.change_credentials(update.current_password, update.username, update.password):
         raise HTTPException(status_code=403, detail="当前密码不正确")
     return CredentialsView(username=update.username)
 
@@ -226,8 +224,7 @@ async def get_media_detail(
 ) -> MediaDetail:
     media = _require_media(repository, xlys_id)
     episodes = (
-        repository.list_episodes(xlys_id)
-        if media.media_type == MediaType.SERIES.value else ()
+        repository.list_episodes(xlys_id) if media.media_type == MediaType.SERIES.value else ()
     )
     return MediaDetail(
         **_movie_item(media, library, len(episodes)).model_dump(),
@@ -413,8 +410,7 @@ async def set_playback_route(
         matches = [
             index
             for index, candidate in enumerate(resolved.candidates)
-            if candidate.route_name is not None
-            and candidate.route_name.casefold() == wanted
+            if candidate.route_name is not None and candidate.route_name.casefold() == wanted
         ]
         if not matches:
             raise HTTPException(
@@ -488,9 +484,14 @@ async def import_from_url(
         detail = await libvio.fetch_detail(request.url)
         media = repository.import_libvio_detail(detail)
         return ManualImportResult(
-            kind=detail.kind, imported=True, xlys_id=media.xlys_id,
-            provider="libvio", source_media_id=detail.public_media_id,
-            title=detail.title, year=detail.year, cover_url=detail.cover_url,
+            kind=detail.kind,
+            imported=True,
+            xlys_id=media.xlys_id,
+            provider="libvio",
+            source_media_id=detail.public_media_id,
+            title=detail.title,
+            year=detail.year,
+            cover_url=detail.cover_url,
             available_episode_count=len(detail.episodes) if detail.kind == "series" else 0,
             declared_episode_count=detail.declared_episode_count,
             source_url=detail.source_url,
@@ -569,17 +570,24 @@ def _catalog(movies: tuple[MediaItem, ...], library: MediaLibrary) -> MovieCatal
         series=sum(movie.media_type == MediaType.SERIES.value for movie in movies),
     )
     return MovieCatalog(
-        movies=[_movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies],
+        movies=[
+            _movie_item(movie, library, episode_counts.get(movie.xlys_id, 0)) for movie in movies
+        ],
         counts=counts,
         recent_limit=library.recent_limit,
         recently_watched_series_count=len(recently_watched_series),
         recently_watched_series=[series.title for series in recently_watched_series],
         discovery_failures=list(library.last_discovery_failures),
-        provider_syncs=[ProviderSyncItem(
-            provider=provider, status=state.status, last_synced_at=state.last_synced_at,
-            failures=list(state.failures),
-        ) for provider, state in library.provider_sync_states.items()
-           if provider == "xlys" or library.libvio_catalog is not None],
+        provider_syncs=[
+            ProviderSyncItem(
+                provider=provider,
+                status=state.status,
+                last_synced_at=state.last_synced_at,
+                failures=list(state.failures),
+            )
+            for provider, state in library.provider_sync_states.items()
+            if provider == "xlys" or library.libvio_catalog is not None
+        ],
     )
 
 
@@ -600,13 +608,16 @@ async def _refresh_media(
             raise HTTPException(status_code=409, detail="详情页与现有影片不匹配")
         before = {episode.source_index for episode in repository.list_episodes(media.xlys_id)}
         repository.import_libvio_detail(detail, keep=False)
-        return RefreshItem(xlys_id=media.xlys_id, title=detail.title, kind=detail.kind,
+        return RefreshItem(
+            xlys_id=media.xlys_id,
+            title=detail.title,
+            kind=detail.kind,
             added_episodes=len({episode.source_index for episode in detail.episodes} - before)
-                if detail.kind == "series" else 0,
-            available_episode_count=len(detail.episodes) if detail.kind == "series" else 0)
-    detail = await fetch_xlys_detail(
-        http, media.source_url, allowed_hosts=allowed_hosts
-    )
+            if detail.kind == "series"
+            else 0,
+            available_episode_count=len(detail.episodes) if detail.kind == "series" else 0,
+        )
+    detail = await fetch_xlys_detail(http, media.source_url, allowed_hosts=allowed_hosts)
     if detail.xlys_id != media.xlys_id or detail.kind != media.media_type:
         raise HTTPException(status_code=409, detail="详情页与现有影片不匹配")
     added = repository.refresh_media_from_detail(detail)
@@ -617,7 +628,8 @@ async def _refresh_media(
         added_episodes=added,
         available_episode_count=(
             len(repository.list_episodes(media.xlys_id))
-            if detail.kind == MediaType.SERIES.value else 0
+            if detail.kind == MediaType.SERIES.value
+            else 0
         ),
     )
 
@@ -677,13 +689,9 @@ def _playback_routes(
         media_kind=media.media_type,
         cache_enabled=playback.cache.enabled,
         cached_source=selection.source if selection is not None else None,
-        manual_override=(
-            selection.manual_override if selection is not None else False
-        ),
+        manual_override=(selection.manual_override if selection is not None else False),
         selected_line=(
-            selection.line
-            if selection is not None and selection.source == "hls"
-            else None
+            selection.line if selection is not None and selection.source == "hls" else None
         ),
         selected_route_name=_selected_route_name(selection),
         selected_route_key=_selected_route_key(selection),
@@ -704,27 +712,41 @@ def _route_options(resolved: ResolvedPage) -> list[PlaybackRouteOption]:
             name=candidate.route_name,
             kind=candidate.kind,
             selectable=(
-                candidate.route_name is not None
-                and counts[candidate.route_name.casefold()] == 1
+                candidate.route_name is not None and counts[candidate.route_name.casefold()] == 1
             ),
         )
         for index, candidate in enumerate(resolved.candidates)
     ]
     for index, _candidate in enumerate(resolved.direct_candidates):
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key=f"url3:{index}",
-            name=f"直连线路 {index + 1}", kind="url3", selectable=True,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key=f"url3:{index}",
+                name=f"直连线路 {index + 1}",
+                kind="url3",
+                selectable=True,
+            )
+        )
     if resolved.tos_available:
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key="source:tos",
-            name="TOS 直连", kind="tos", selectable=True,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key="source:tos",
+                name="TOS 直连",
+                kind="tos",
+                selectable=True,
+            )
+        )
     if resolved.member_token is not None:
-        routes.append(PlaybackRouteOption(
-            line=len(routes), key="source:member",
-            name="会员线路", kind="member", selectable=False,
-        ))
+        routes.append(
+            PlaybackRouteOption(
+                line=len(routes),
+                key="source:member",
+                name="会员线路",
+                kind="member",
+                selectable=False,
+            )
+        )
     return routes
 
 

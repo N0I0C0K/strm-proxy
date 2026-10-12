@@ -45,28 +45,63 @@
         <div class="dialog-icon import"><Link2 size={20} /></div>
         <div>
           <Dialog.Title>通过网址添加</Dialog.Title>
-          <Dialog.Description>粘贴雪落影视或 LIBVIO 的详情页。电影和电视剧都会直接加入片库并设为人工保留。</Dialog.Description>
+          <Dialog.Description
+            >粘贴雪落影视或 LIBVIO 的详情页。电影和电视剧都会直接加入片库并设为人工保留。</Dialog.Description
+          >
         </div>
       </div>
-      <form class="import-form" onsubmit={(event) => { event.preventDefault(); importUrl() }}>
+      <form
+        class="import-form"
+        onsubmit={(event) => {
+          event.preventDefault()
+          importUrl()
+        }}
+      >
         <label for="manual-url">影片详情页网址</label>
         <div class="url-field">
           <Link2 size={17} />
-          <input id="manual-url" bind:value={url} type="url" placeholder="https://www.libvio.lat/detail/5813847.html" required autocomplete="url" />
+          <input
+            id="manual-url"
+            bind:value={url}
+            type="url"
+            placeholder="https://www.libvio.lat/detail/5813847.html"
+            required
+            autocomplete="url"
+          />
         </div>
         {#if error}<p class="form-error" role="alert">{error}</p>{/if}
         {#if result}
-          <div class:series-result={result.kind === 'series'} class="import-result" aria-live="polite">
+          <div
+            class:series-result={result.kind === 'series'}
+            class="import-result"
+            aria-live="polite"
+          >
             <div class="result-cover">
-              {#if result.cover_url}<img src={result.cover_url} alt="" referrerpolicy="no-referrer" onerror={imageFailed} />{:else}<Film size={22} />{/if}
+              {#if result.cover_url}<img
+                  src={result.cover_url}
+                  alt=""
+                  referrerpolicy="no-referrer"
+                  onerror={imageFailed}
+                />{:else}<Film size={22} />{/if}
             </div>
             <div>
-              <span class="result-kind">{result.kind === 'series' ? '已添加电视剧' : '已添加电影'} · {result.provider === 'libvio' ? 'LIBVIO' : '雪落影视'}</span>
+              <span class="result-kind"
+                >{result.kind === 'series' ? '已添加电视剧' : '已添加电影'} · {result.provider ===
+                'libvio'
+                  ? 'LIBVIO'
+                  : '雪落影视'}</span
+              >
               <strong>{result.title}{result.year ? ` (${result.year})` : ''}</strong>
               <p>{result.message}</p>
-              {#if result.kind === 'series'}<small><Tv size={13} />当前 {result.available_episode_count} 集{result.declared_episode_count ? ` / 计划 ${result.declared_episode_count} 集` : ''}</small>{/if}
+              {#if result.kind === 'series'}<small
+                  ><Tv size={13} />当前 {result.available_episode_count} 集{result.declared_episode_count
+                    ? ` / 计划 ${result.declared_episode_count} 集`
+                    : ''}</small
+                >{/if}
             </div>
-            <a href={result.source_url} target="_blank" rel="noreferrer" aria-label="打开来源页"><ExternalLink size={16} /></a>
+            <a href={result.source_url} target="_blank" rel="noreferrer" aria-label="打开来源页"
+              ><ExternalLink size={16} /></a
+            >
           </div>
         {/if}
         <div class="dialog-actions">

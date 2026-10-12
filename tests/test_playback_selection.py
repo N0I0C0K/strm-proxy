@@ -77,13 +77,9 @@ def test_automatic_selection_expires_but_manual_override_does_not() -> None:
     try:
         before = datetime.now(timezone.utc)
         cache.remember_hls(resolved, 0)
-        automatic = repository.get_with_expiration(
-            f"playback-selection:{PAGE_URL}"
-        )
+        automatic = repository.get_with_expiration(f"playback-selection:{PAGE_URL}")
         cache.remember_hls(resolved, 1, manual_override=True)
-        manual = repository.get_with_expiration(
-            f"playback-selection:{PAGE_URL}"
-        )
+        manual = repository.get_with_expiration(f"playback-selection:{PAGE_URL}")
     finally:
         media_repository.close()
 
@@ -201,9 +197,7 @@ def test_legacy_hls_cache_is_upgraded_to_route_name() -> None:
 
     try:
         selection = cache.get(resolved)
-        stored = json.loads(
-            repository.get(f"playback-selection:{PAGE_URL}") or "{}"
-        )
+        stored = json.loads(repository.get(f"playback-selection:{PAGE_URL}") or "{}")
     finally:
         media_repository.close()
 
@@ -293,9 +287,7 @@ def test_client_cancellation_does_not_cancel_video_exploration(
     async def scenario() -> None:
         resolver = _BlockingResolver()
         coordinator = PlaybackCoordinator(cache)
-        disconnected = asyncio.create_task(
-            coordinator.resolve_auto(resolver, PAGE_URL)
-        )
+        disconnected = asyncio.create_task(coordinator.resolve_auto(resolver, PAGE_URL))
         await resolver.started.wait()
         disconnected.cancel()
         with pytest.raises(asyncio.CancelledError):

@@ -83,10 +83,7 @@ def validate_page_url(page_url: str, allowed_hosts: Iterable[str]) -> str:
     if parsed.username or parsed.password or port is not None:
         raise ResolverError("Credentials and custom ports are not allowed")
     if not _PLAY_PATH_PATTERN.fullmatch(parsed.path):
-        raise ResolverError(
-            "Expected a page URL like /play/27062-0.htm "
-            "or /guoju/play/24358-0.htm"
-        )
+        raise ResolverError("Expected a page URL like /play/27062-0.htm or /guoju/play/24358-0.htm")
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 
@@ -109,10 +106,7 @@ def extract_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
     # Keep the original order for established fields, then include additional
     # numbered fields that the site may add for newer playback lines.
     kinds = [kind for kind in ("m3u8", "m3u8_2", "url3") if kind in data]
-    kinds.extend(
-        kind for kind in data
-        if kind not in kinds and _HLS_FIELD_PATTERN.fullmatch(kind)
-    )
+    kinds.extend(kind for kind in data if kind not in kinds and _HLS_FIELD_PATTERN.fullmatch(kind))
     for kind in kinds:
         value = data.get(kind)
         if not isinstance(value, str):
@@ -183,9 +177,7 @@ class XlysResolver:
         self.member_access_enabled = member_access_enabled
         self.prefer_raw_segments = prefer_raw_segments
         self._page_cache = TTLCache[str, ResolvedPage](cache_ttl_seconds)
-        self._manifest_cache = TTLCache[tuple[str, int], ManifestResult](
-            cache_ttl_seconds
-        )
+        self._manifest_cache = TTLCache[tuple[str, int], ManifestResult](cache_ttl_seconds)
 
     async def resolve_page(
         self,
@@ -342,16 +334,11 @@ class XlysResolver:
             verify_code = "888"
         else:
             if not self.member_access_enabled:
-                raise ResolverError(
-                    "The member source requires xlys login credentials"
-                )
+                raise ResolverError("The member source requires xlys login credentials")
             if not resolved.member_token:
-                raise ResolverError(
-                    "The play page does not advertise a member source"
-                )
+                raise ResolverError("The play page does not advertise a member source")
             raise ResolverError(
-                "The member source requires automatic CAPTCHA recognition, "
-                "which is not configured"
+                "The member source requires automatic CAPTCHA recognition, which is not configured"
             )
 
         raw_url = await self._fetch_god_media_url(
@@ -378,13 +365,9 @@ class XlysResolver:
                     safe_url_for_log(media_url),
                 )
                 return resolved, media_url
-        raise ResolverError(
-            f"The {source} source did not return a directly playable media object"
-        )
+        raise ResolverError(f"The {source} source did not return a directly playable media object")
 
-    async def resolve_direct_candidate(
-        self, page_url: str, line: int
-    ) -> DirectMediaResult:
+    async def resolve_direct_candidate(self, page_url: str, line: int) -> DirectMediaResult:
         resolved = await self.resolve_page(page_url)
         if line < 0 or line >= len(resolved.direct_candidates):
             raise ResolverError("The selected direct line is no longer available")
@@ -426,10 +409,7 @@ class XlysResolver:
 
         failures: list[str] = []
         wrapped_fallback: int | None = None
-        tasks = {
-            line: asyncio.create_task(self._probe_hls_line(page_url, line))
-            for line in order
-        }
+        tasks = {line: asyncio.create_task(self._probe_hls_line(page_url, line)) for line in order}
         try:
             while tasks:
                 done, _pending = await asyncio.wait(
@@ -451,8 +431,7 @@ class XlysResolver:
                         )
                         failures.append(f"line {line}: {detail}")
                         logger.warning(
-                            "event=hls_line_probe_error pid=%d line=%d "
-                            "kind=%s detail=%s",
+                            "event=hls_line_probe_error pid=%d line=%d kind=%s detail=%s",
                             resolved.pid,
                             line,
                             resolved.candidates[line].kind,
@@ -461,8 +440,7 @@ class XlysResolver:
                         continue
 
                     if media_kind == "raw" or (
-                        media_kind == "wrapped"
-                        and not self.prefer_raw_segments
+                        media_kind == "wrapped" and not self.prefer_raw_segments
                     ):
                         logger.info(
                             "event=hls_line_selected pid=%d line=%d kind=%s "
@@ -474,9 +452,8 @@ class XlysResolver:
                         )
                         return line
                     if media_kind == "wrapped":
-                        if (
-                            wrapped_fallback is None
-                            or order.index(line) < order.index(wrapped_fallback)
+                        if wrapped_fallback is None or order.index(line) < order.index(
+                            wrapped_fallback
                         ):
                             wrapped_fallback = line
                         logger.info(
@@ -488,9 +465,7 @@ class XlysResolver:
                         )
                         continue
 
-                    failures.append(
-                        f"line {line}: first media resource is unavailable"
-                    )
+                    failures.append(f"line {line}: first media resource is unavailable")
                     logger.info(
                         "event=hls_line_unhealthy pid=%d line=%d kind=%s",
                         resolved.pid,
@@ -505,16 +480,13 @@ class XlysResolver:
                 await asyncio.gather(*pending, return_exceptions=True)
         if wrapped_fallback is not None:
             logger.info(
-                "event=hls_line_selected pid=%d line=%d kind=%s "
-                "media_kind=wrapped fallback=true",
+                "event=hls_line_selected pid=%d line=%d kind=%s media_kind=wrapped fallback=true",
                 resolved.pid,
                 wrapped_fallback,
                 resolved.candidates[wrapped_fallback].kind,
             )
             return wrapped_fallback
-        raise ResolverError(
-            "No healthy HLS line was found (" + "; ".join(failures) + ")"
-        )
+        raise ResolverError("No healthy HLS line was found (" + "; ".join(failures) + ")")
 
     async def _fetch_candidates(
         self,
@@ -553,9 +525,7 @@ class XlysResolver:
         tos_available = bool(body["data"].get("tos"))
         raw_member_token = body["data"].get("ptoken")
         member_token = (
-            str(raw_member_token).strip()
-            if raw_member_token not in (None, "", False)
-            else None
+            str(raw_member_token).strip() if raw_member_token not in (None, "", False) else None
         )
         if not candidates and not direct_candidates and not tos_available and member_token is None:
             raise ResolverError("No playable source was returned")
@@ -605,9 +575,7 @@ class XlysResolver:
         media_url = body.get("url") if isinstance(body, dict) else None
         if not isinstance(media_url, str) or not media_url.strip():
             error = body.get("error") if isinstance(body, dict) else None
-            raise ResolverError(
-                f"The /god endpoint did not return a media URL: {error or body!r}"
-            )
+            raise ResolverError(f"The /god endpoint did not return a media URL: {error or body!r}")
         media_url = media_url.strip()
         logger.debug(
             "event=god_media_url pid=%d target=%s",
@@ -623,11 +591,7 @@ class XlysResolver:
         sample_bytes: int = 64,
         use_range: bool = True,
     ) -> bool:
-        headers = (
-            {"Range": f"bytes=0-{sample_bytes - 1}"}
-            if use_range
-            else None
-        )
+        headers = {"Range": f"bytes=0-{sample_bytes - 1}"} if use_range else None
         try:
             async with self.client.stream(
                 "GET",
@@ -653,8 +617,7 @@ class XlysResolver:
         content_type = response.headers.get("content-type", "").lower()
         healthy = content_type.startswith("video/") or b"ftyp" in prefix[:32]
         logger.debug(
-            "event=direct_media_probe_result target=%s status=%d "
-            "content_type=%s healthy=%s",
+            "event=direct_media_probe_result target=%s status=%d content_type=%s healthy=%s",
             safe_url_for_log(media_url),
             response.status_code,
             content_type or "unknown",
@@ -679,8 +642,7 @@ class XlysResolver:
                 )
                 response.raise_for_status()
                 logger.debug(
-                    "event=hls_variant_fetched line=%d depth=%d target=%s "
-                    "status=%d",
+                    "event=hls_variant_fetched line=%d depth=%d target=%s status=%d",
                     line,
                     _depth + 1,
                     safe_url_for_log(current_url),
@@ -797,8 +759,7 @@ def _is_trusted_direct_media_url(url: str) -> bool:
         and not parsed.password
         and port is None
         and any(
-            host == suffix or host.endswith(f".{suffix}")
-            for suffix in _DIRECT_MEDIA_HOST_SUFFIXES
+            host == suffix or host.endswith(f".{suffix}") for suffix in _DIRECT_MEDIA_HOST_SUFFIXES
         )
     )
 

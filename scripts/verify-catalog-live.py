@@ -20,13 +20,11 @@ async def main() -> None:
         movies = await XlysCatalog(client).discover_movies()
     print(f"movies={len(movies)}", flush=True)
     print(
-        f"first={movies[0].dav_filename} -> "
-        f"https://www.xlys02.com/play/{movies[0].xlys_id}-0.htm",
+        f"first={movies[0].dav_filename} -> https://www.xlys02.com/play/{movies[0].xlys_id}-0.htm",
         flush=True,
     )
     print(
-        f"last={movies[-1].dav_filename} -> "
-        f"https://www.xlys02.com/play/{movies[-1].xlys_id}-0.htm",
+        f"last={movies[-1].dav_filename} -> https://www.xlys02.com/play/{movies[-1].xlys_id}-0.htm",
         flush=True,
     )
 
@@ -62,8 +60,7 @@ async def main() -> None:
         assert "proxy_segments" not in stream.text
     print("webdav_root_responses=3 (root + movie + series)", flush=True)
     print(
-        f"webdav_movie_responses={len(movies) + 1} "
-        "(directory + discovered STRM files)",
+        f"webdav_movie_responses={len(movies) + 1} (directory + discovered STRM files)",
         flush=True,
     )
 

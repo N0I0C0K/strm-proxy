@@ -29,8 +29,7 @@ async def main() -> None:
         qualifying = tuple(
             entry.douban_rating
             for entry in entries
-            if entry.douban_rating is not None
-            and entry.douban_rating > threshold
+            if entry.douban_rating is not None and entry.douban_rating > threshold
         )
         print(
             label,

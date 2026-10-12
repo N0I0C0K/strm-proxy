@@ -93,40 +93,20 @@ class AppSettings:
             play_selection_ttl_seconds=float(
                 os.getenv("STRM_PROXY_PLAY_SELECTION_TTL_SECONDS", "7200")
             ),
-            segment_prefetch_seconds=float(
-                os.getenv("STRM_PROXY_SEGMENT_PREFETCH_SECONDS", "60")
-            ),
-            segment_cache_max_mb=int(
-                os.getenv("STRM_PROXY_SEGMENT_CACHE_MAX_MB", "128")
-            ),
-            upstream_proxy=_optional_environment(
-                "STRM_PROXY_UPSTREAM_PROXY"
-            ),
-            request_timeout_seconds=float(
-                os.getenv("STRM_PROXY_REQUEST_TIMEOUT", "20")
-            ),
-            connect_timeout_seconds=float(
-                os.getenv("STRM_PROXY_CONNECT_TIMEOUT", "10")
-            ),
+            segment_prefetch_seconds=float(os.getenv("STRM_PROXY_SEGMENT_PREFETCH_SECONDS", "60")),
+            segment_cache_max_mb=int(os.getenv("STRM_PROXY_SEGMENT_CACHE_MAX_MB", "128")),
+            upstream_proxy=_optional_environment("STRM_PROXY_UPSTREAM_PROXY"),
+            request_timeout_seconds=float(os.getenv("STRM_PROXY_REQUEST_TIMEOUT", "20")),
+            connect_timeout_seconds=float(os.getenv("STRM_PROXY_CONNECT_TIMEOUT", "10")),
             cache_ttl_seconds=float(os.getenv("STRM_PROXY_CACHE_TTL", "300")),
-            discovery_recent_limit=int(
-                os.getenv("STRM_PROXY_DISCOVERY_RECENT_LIMIT", "50")
-            ),
-            discovery_year_span=int(
-                os.getenv("STRM_PROXY_DISCOVERY_YEAR_SPAN", "4")
-            ),
-            douban_rating_threshold=float(
-                os.getenv("STRM_PROXY_DOUBAN_RATING_THRESHOLD", "7.0")
-            ),
+            discovery_recent_limit=int(os.getenv("STRM_PROXY_DISCOVERY_RECENT_LIMIT", "50")),
+            discovery_year_span=int(os.getenv("STRM_PROXY_DISCOVERY_YEAR_SPAN", "4")),
+            douban_rating_threshold=float(os.getenv("STRM_PROXY_DOUBAN_RATING_THRESHOLD", "7.0")),
             series_douban_rating_threshold=float(
                 os.getenv("STRM_PROXY_SERIES_DOUBAN_RATING_THRESHOLD", "8.0")
             ),
-            catalog_cache_ttl_seconds=float(
-                os.getenv("STRM_PROXY_CATALOG_CACHE_TTL", "1800")
-            ),
-            database_path=os.getenv(
-                "STRM_PROXY_DATABASE_PATH", "data/strm-proxy.db"
-            ),
+            catalog_cache_ttl_seconds=float(os.getenv("STRM_PROXY_CATALOG_CACHE_TTL", "1800")),
+            database_path=os.getenv("STRM_PROXY_DATABASE_PATH", "data/strm-proxy.db"),
             xlys_username=_optional_environment("STRM_PROXY_XLYS_USERNAME"),
             xlys_password=_optional_environment("STRM_PROXY_XLYS_PASSWORD"),
             dav=DavSettings(
@@ -134,12 +114,8 @@ class AppSettings:
                 password=os.getenv("STRM_PROXY_DAV_PASSWORD", "demo"),
                 filename=os.getenv("STRM_PROXY_DAV_FILENAME", "痴迷.strm"),
                 page_url=os.getenv("STRM_PROXY_PAGE_URL", DEFAULT_PAGE_URL),
-                catalog_directory=os.getenv(
-                    "STRM_PROXY_DAV_CATALOG_DIRECTORY", "电影"
-                ),
-                series_directory=os.getenv(
-                    "STRM_PROXY_DAV_SERIES_DIRECTORY", "电视剧"
-                ),
+                catalog_directory=os.getenv("STRM_PROXY_DAV_CATALOG_DIRECTORY", "电影"),
+                series_directory=os.getenv("STRM_PROXY_DAV_SERIES_DIRECTORY", "电视剧"),
             ),
         )
         settings.validate()
@@ -156,60 +132,39 @@ class AppSettings:
             "CRITICAL",
         }:
             raise RuntimeError(
-                "STRM_PROXY_LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, "
-                "or CRITICAL"
+                "STRM_PROXY_LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL"
             )
         if self.cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CACHE_TTL must be positive")
         if self.play_selection_ttl_seconds <= 0:
-            raise RuntimeError(
-                "STRM_PROXY_PLAY_SELECTION_TTL_SECONDS must be positive"
-            )
+            raise RuntimeError("STRM_PROXY_PLAY_SELECTION_TTL_SECONDS must be positive")
         if self.request_timeout_seconds <= 0:
             raise RuntimeError("STRM_PROXY_REQUEST_TIMEOUT must be positive")
         if self.connect_timeout_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CONNECT_TIMEOUT must be positive")
         if self.segment_prefetch_seconds < 0:
-            raise RuntimeError(
-                "STRM_PROXY_SEGMENT_PREFETCH_SECONDS must not be negative"
-            )
+            raise RuntimeError("STRM_PROXY_SEGMENT_PREFETCH_SECONDS must not be negative")
         if self.segment_cache_max_mb < 0:
-            raise RuntimeError(
-                "STRM_PROXY_SEGMENT_CACHE_MAX_MB must not be negative"
-            )
+            raise RuntimeError("STRM_PROXY_SEGMENT_CACHE_MAX_MB must not be negative")
         if self.upstream_proxy is not None:
             parsed_proxy = urlparse(self.upstream_proxy)
-            if (
-                parsed_proxy.scheme not in {"http", "https"}
-                or parsed_proxy.hostname is None
-            ):
-                raise RuntimeError(
-                    "STRM_PROXY_UPSTREAM_PROXY must be an http(s) proxy URL"
-                )
+            if parsed_proxy.scheme not in {"http", "https"} or parsed_proxy.hostname is None:
+                raise RuntimeError("STRM_PROXY_UPSTREAM_PROXY must be an http(s) proxy URL")
         if not 1 <= self.discovery_recent_limit <= 500:
-            raise RuntimeError(
-                "STRM_PROXY_DISCOVERY_RECENT_LIMIT must be between 1 and 500"
-            )
+            raise RuntimeError("STRM_PROXY_DISCOVERY_RECENT_LIMIT must be between 1 and 500")
         if not 1 <= self.discovery_year_span <= 10:
-            raise RuntimeError(
-                "STRM_PROXY_DISCOVERY_YEAR_SPAN must be between 1 and 10"
-            )
+            raise RuntimeError("STRM_PROXY_DISCOVERY_YEAR_SPAN must be between 1 and 10")
         if not 0 <= self.douban_rating_threshold <= 10:
-            raise RuntimeError(
-                "STRM_PROXY_DOUBAN_RATING_THRESHOLD must be between 0 and 10"
-            )
+            raise RuntimeError("STRM_PROXY_DOUBAN_RATING_THRESHOLD must be between 0 and 10")
         if not 0 <= self.series_douban_rating_threshold <= 10:
-            raise RuntimeError(
-                "STRM_PROXY_SERIES_DOUBAN_RATING_THRESHOLD must be between 0 and 10"
-            )
+            raise RuntimeError("STRM_PROXY_SERIES_DOUBAN_RATING_THRESHOLD must be between 0 and 10")
         if self.catalog_cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CATALOG_CACHE_TTL must be positive")
         if not self.database_path.strip():
             raise RuntimeError("STRM_PROXY_DATABASE_PATH must not be empty")
         if (self.xlys_username is None) != (self.xlys_password is None):
             raise RuntimeError(
-                "STRM_PROXY_XLYS_USERNAME and STRM_PROXY_XLYS_PASSWORD "
-                "must be configured together"
+                "STRM_PROXY_XLYS_USERNAME and STRM_PROXY_XLYS_PASSWORD must be configured together"
             )
         self.dav.validate()
 
@@ -227,9 +182,7 @@ def _environment_bool(name: str, *, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise RuntimeError(
-        f"{name} must be one of true/false, 1/0, yes/no, or on/off"
-    )
+    raise RuntimeError(f"{name} must be one of true/false, 1/0, yes/no, or on/off")
 
 
 def _optional_environment(

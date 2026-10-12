@@ -72,9 +72,7 @@ def check_playback(
 
     repeated = client.get(location, follow_redirects=False)
     if repeated.status_code != 200:
-        raise AssertionError(
-            f"cached manifest was unstable: {repeated.status_code}"
-        )
+        raise AssertionError(f"cached manifest was unstable: {repeated.status_code}")
 
     segment_path = next(
         (

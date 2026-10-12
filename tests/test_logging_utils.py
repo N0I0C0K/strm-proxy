@@ -13,8 +13,7 @@ from strm_proxy.logging_utils import (
 
 def test_safe_url_for_log_removes_credentials_query_and_fragment() -> None:
     safe = safe_url_for_log(
-        "https://viewer:password@cdn.example:8443/video.mp4"
-        "?token=secret#fragment"
+        "https://viewer:password@cdn.example:8443/video.mp4?token=secret#fragment"
     )
 
     assert safe == "https://cdn.example:8443/video.mp4"
@@ -78,9 +77,7 @@ def test_logging_removes_queries_from_uvicorn_access_records() -> None:
     for item in access_logger.filters:
         assert item.filter(record) is True
 
-    assert record.getMessage() == (
-        '192.168.1.13:1234 - "GET /segment HTTP/1.1" 200'
-    )
+    assert record.getMessage() == ('192.168.1.13:1234 - "GET /segment HTTP/1.1" 200')
     assert "secret" not in record.getMessage()
 
 

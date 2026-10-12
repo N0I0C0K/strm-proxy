@@ -12,7 +12,10 @@ import httpx
 
 from .cache import TTLCache
 from .libvio import (
-    DETAIL_PATH, LIBVIO_HOSTS, LibvioDetail, LibvioNoOnlineRoutes,
+    DETAIL_PATH,
+    LIBVIO_HOSTS,
+    LibvioDetail,
+    LibvioNoOnlineRoutes,
     parse_libvio_detail,
 )
 from .models import ResolverError
@@ -67,11 +70,21 @@ class _ListParser(HTMLParser):
             if self._list_depth and "stui-vodlist__thumb" in classes:
                 parsed = urlsplit(urljoin(self.origin, href))
                 match = DETAIL_PATH.fullmatch(parsed.path)
-                if (match and parsed.scheme == "https" and parsed.hostname in LIBVIO_HOSTS
-                        and not parsed.query and not parsed.fragment
-                        and not parsed.username and parsed.port in {None, 443}):
-                    self._card = {"source_media_id": match[1], "title": values.get("title") or "",
-                                  "source_url": f"https://{parsed.hostname}{parsed.path}", "rating": None}
+                if (
+                    match
+                    and parsed.scheme == "https"
+                    and parsed.hostname in LIBVIO_HOSTS
+                    and not parsed.query
+                    and not parsed.fragment
+                    and not parsed.username
+                    and parsed.port in {None, 443}
+                ):
+                    self._card = {
+                        "source_media_id": match[1],
+                        "title": values.get("title") or "",
+                        "source_url": f"https://{parsed.hostname}{parsed.path}",
+                        "rating": None,
+                    }
         elif tag == "span" and "pic-tag" in classes and self._card:
             self._rating = []
 
@@ -115,11 +128,20 @@ class LibvioCatalog:
 
     origin = "https://www.libvio.lat"
 
-    def __init__(self, client: httpx.AsyncClient, *, recent_limit: int = 50,
-                 year_span: int = 4, movie_rating_threshold: float = 7.0,
-                 series_rating_threshold: float = 8.0, cache_ttl_seconds: float = 1800,
-                 current_year: int | None = None, request_interval_seconds: float = 0.25,
-                 detail_concurrency: int = 3, max_pages: int = 200) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        recent_limit: int = 50,
+        year_span: int = 4,
+        movie_rating_threshold: float = 7.0,
+        series_rating_threshold: float = 8.0,
+        cache_ttl_seconds: float = 1800,
+        current_year: int | None = None,
+        request_interval_seconds: float = 0.25,
+        detail_concurrency: int = 3,
+        max_pages: int = 200,
+    ) -> None:
         self.client = client
         self.recent_limit = recent_limit
         self.year_span = year_span
@@ -149,11 +171,15 @@ class LibvioCatalog:
             if cached is not None:
                 return cached
             year = self.current_year or date.today().year
-            threshold = self.series_rating_threshold if kind == "series" else self.movie_rating_threshold
+            threshold = (
+                self.series_rating_threshold if kind == "series" else self.movie_rating_threshold
+            )
             groups = await asyncio.gather(
                 self._list(kind, order="time"),
-                *(self._list(kind, order="score", year=value, threshold=threshold)
-                  for value in range(year, year - self.year_span, -1)),
+                *(
+                    self._list(kind, order="score", year=value, threshold=threshold)
+                    for value in range(year, year - self.year_span, -1)
+                ),
                 return_exceptions=True,
             )
             for group in groups:
@@ -168,28 +194,46 @@ class LibvioCatalog:
             async def fetch(card: LibvioCard) -> LibvioDetail | None:
                 async with self._detail_slots:
                     try:
-                        detail = parse_libvio_detail(await self._get(card.source_url),
-                                                     source_url=card.source_url, kind_hint=kind)
+                        detail = parse_libvio_detail(
+                            await self._get(card.source_url),
+                            source_url=card.source_url,
+                            kind_hint=kind,
+                        )
                         return detail
                     except LibvioNoOnlineRoutes:
-                        logger.info("event=libvio_discovery_download_only source_id=%s", card.source_media_id)
+                        logger.info(
+                            "event=libvio_discovery_download_only source_id=%s",
+                            card.source_media_id,
+                        )
                         return None
                     except (httpx.HTTPError, ResolverError, ValueError) as exc:
                         # Any incomplete detail snapshot disables pruning for this
                         # kind. Successful details may still refresh or add titles.
-                        failures.append(f"LIBVIO {card.title}（{card.source_media_id}）详情获取失败")
-                        logger.warning("event=libvio_discovery_detail_failed source_id=%s reason=%s",
-                                       card.source_media_id,
-                                       str(exc) if isinstance(exc, ResolverError) else type(exc).__name__)
+                        failures.append(
+                            f"LIBVIO {card.title}（{card.source_media_id}）详情获取失败"
+                        )
+                        logger.warning(
+                            "event=libvio_discovery_detail_failed source_id=%s reason=%s",
+                            card.source_media_id,
+                            str(exc) if isinstance(exc, ResolverError) else type(exc).__name__,
+                        )
                         return None
 
-            details = tuple(item for item in await asyncio.gather(*(fetch(card) for card in cards.values()))
-                            if item is not None)
+            details = tuple(
+                item
+                for item in await asyncio.gather(*(fetch(card) for card in cards.values()))
+                if item is not None
+            )
             result = LibvioDiscovery(details, tuple(failures))
             if result.complete:
                 self._cache.set(kind, result)
-            logger.info("event=libvio_discovery_complete kind=%s candidates=%d online=%d failures=%d",
-                        kind, len(cards), len(details), len(failures))
+            logger.info(
+                "event=libvio_discovery_complete kind=%s candidates=%d online=%d failures=%d",
+                kind,
+                len(cards),
+                len(details),
+                len(failures),
+            )
             return result
 
     @staticmethod
@@ -201,8 +245,9 @@ class LibvioCatalog:
         parts[11] = str(year) if year is not None else ""
         return "/show/" + "-".join(parts) + ".html"
 
-    async def _list(self, kind: Kind, *, order: str, year: int | None = None,
-                    threshold: float = 0) -> tuple[LibvioCard, ...]:
+    async def _list(
+        self, kind: Kind, *, order: str, year: int | None = None, threshold: float = 0
+    ) -> tuple[LibvioCard, ...]:
         entries: dict[str, LibvioCard] = {}
         for page in range(1, self._max_pages + 1):
             path = self._path(kind, order, page, year)
@@ -238,7 +283,9 @@ class LibvioCatalog:
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPStatusError as exc:
-                if attempt == 2 or (exc.response.status_code != 429 and exc.response.status_code < 500):
+                if attempt == 2 or (
+                    exc.response.status_code != 429 and exc.response.status_code < 500
+                ):
                     raise
             except httpx.TransportError:
                 if attempt == 2:

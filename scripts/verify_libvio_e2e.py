@@ -32,7 +32,7 @@ def probe_range(client: httpx.Client, url: str, byte_range: str) -> dict:
         response.raise_for_status()
         payload = bytearray()
         for chunk in response.iter_bytes(8192):
-            payload.extend(chunk[:PROBE_BYTES - len(payload)])
+            payload.extend(chunk[: PROBE_BYTES - len(payload)])
             if len(payload) >= PROBE_BYTES:
                 break
         content_range = response.headers.get("content-range", "")
@@ -61,25 +61,38 @@ def probe_range(client: httpx.Client, url: str, byte_range: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--page-url", action="append", help="Detail or episode URL; repeat to check more pages")
+    parser.add_argument(
+        "--page-url", action="append", help="Detail or episode URL; repeat to check more pages"
+    )
     parser.add_argument("--port", type=int, default=18878)
-    parser.add_argument("--lookup-proxy", help="Optional explicit HTTP(S) proxy for page and lookup requests")
+    parser.add_argument(
+        "--lookup-proxy", help="Optional explicit HTTP(S) proxy for page and lookup requests"
+    )
     parser.add_argument("--preview", action="store_true")
-    parser.add_argument("--output", type=Path, default=Path("data/libvio-exploration/service-e2e.json"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("data/libvio-exploration/service-e2e.json")
+    )
     args = parser.parse_args()
     pages = args.page_url or [DEFAULT_DETAIL_URL]
     base_url = f"http://127.0.0.1:{args.port}"
-    application = create_app(AppSettings(
-        host="127.0.0.1", port=args.port, database_path=":memory:",
-        log_file=None, log_level="WARNING", upstream_proxy=args.lookup_proxy,
-        dav=DavSettings(filename="LIBVIO-test.strm", page_url=pages[0]),
-    ))
+    application = create_app(
+        AppSettings(
+            host="127.0.0.1",
+            port=args.port,
+            database_path=":memory:",
+            log_file=None,
+            log_level="WARNING",
+            upstream_proxy=args.lookup_proxy,
+            dav=DavSettings(filename="LIBVIO-test.strm", page_url=pages[0]),
+        )
+    )
 
     @application.get("/libvio-check", include_in_schema=False)
     def preview(page_url: str = DEFAULT_DETAIL_URL):
         source = "/play?" + urlencode({"page_url": page_url})
         # Inspect actual decoded frames, rather than counting downloaded bytes.
-        return HTMLResponse('''<!doctype html><meta charset="utf-8">
+        return HTMLResponse(
+            """<!doctype html><meta charset="utf-8">
 <title>LIBVIO playback check</title><style>body{background:#202124;color:white;font:18px sans-serif;padding:24px}video{width:min(100%,900px)}pre{white-space:pre-wrap}</style>
 <h1>LIBVIO 自动播放验证</h1><video controls autoplay muted playsinline></video>
 <pre id="status">等待视频</pre><script>
@@ -89,19 +102,30 @@ function update(){status.textContent=JSON.stringify({event,decodedFrames:frames,
 ['loadedmetadata','playing','waiting','error','pause'].forEach(name=>video.addEventListener(name,()=>{event=name;update()}));
 function frame(){frames++;event='decoded';update();if(frames<30){video.requestVideoFrameCallback(frame)}else{video.pause();}}
 video.requestVideoFrameCallback(frame);
-video.src=''' + json.dumps(source) + ''';
-</script>''')
+video.src="""
+            + json.dumps(source)
+            + """;
+</script>"""
+        )
 
-    server = uvicorn.Server(uvicorn.Config(application, host="127.0.0.1", port=args.port,
-                                          log_level="warning", access_log=False))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            application, host="127.0.0.1", port=args.port, log_level="warning", access_log=False
+        )
+    )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     report = {"lookup_proxy": bool(args.lookup_proxy), "video_proxy": False, "checks": []}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with httpx.Client(trust_env=False, timeout=90) as service, httpx.Client(
-            trust_env=False, timeout=30, follow_redirects=False,
-        ) as media:
+        with (
+            httpx.Client(trust_env=False, timeout=90) as service,
+            httpx.Client(
+                trust_env=False,
+                timeout=30,
+                follow_redirects=False,
+            ) as media,
+        ):
             deadline = time.monotonic() + 15
             while not server.started:
                 if not thread.is_alive() or time.monotonic() >= deadline:
@@ -119,7 +143,9 @@ video.src=''' + json.dumps(source) + ''';
                 stable_url = strm.text.strip()
                 play = service.get(stable_url, follow_redirects=False)
                 if play.status_code != 302 or play.headers.get("cache-control") != "no-store":
-                    raise RuntimeError(f"Playback did not return a no-store redirect: {play.status_code} {play.text}")
+                    raise RuntimeError(
+                        f"Playback did not return a no-store redirect: {play.status_code} {play.text}"
+                    )
                 target = play.headers["location"]
                 if urlsplit(target).scheme != "https":
                     raise RuntimeError("Video redirect did not use HTTPS")
@@ -128,8 +154,11 @@ video.src=''' + json.dumps(source) + ''';
                     raise RuntimeError("Video did not return a valid MP4 Range response")
                 size = int(head["content_range"].rsplit("/", 1)[1])
                 middle = size // 2
-                ranges = [head,
-                    probe_range(media, target, f"bytes={middle}-{min(middle + PROBE_BYTES - 1, size - 1)}"),
+                ranges = [
+                    head,
+                    probe_range(
+                        media, target, f"bytes={middle}-{min(middle + PROBE_BYTES - 1, size - 1)}"
+                    ),
                     probe_range(media, target, f"bytes=-{PROBE_BYTES}"),
                 ]
                 if not all(r["range_valid"] for r in ranges):
@@ -139,22 +168,35 @@ video.src=''' + json.dumps(source) + ''';
                 result = resolution.json()
                 exported = args.output.parent / f"LIBVIO-test-{index + 1}.strm"
                 # This file is for the normal service, rather than the temporary test port.
-                exported.write_text(stable_url.replace(base_url, "http://127.0.0.1:8787", 1) + "\n", encoding="utf-8")
+                exported.write_text(
+                    stable_url.replace(base_url, "http://127.0.0.1:8787", 1) + "\n",
+                    encoding="utf-8",
+                )
                 check = {
-                    "page_url": page_url, "title": result["title"],
-                    "provider": result["provider"], "route": result["route_name"],
-                    "episode": result["episode_number"], "lookup_scheme": result["lookup_scheme"],
-                    "strm_status": strm.status_code, "play_status": play.status_code,
-                    "media_host": urlsplit(target).hostname, "ranges": ranges,
+                    "page_url": page_url,
+                    "title": result["title"],
+                    "provider": result["provider"],
+                    "route": result["route_name"],
+                    "episode": result["episode_number"],
+                    "lookup_scheme": result["lookup_scheme"],
+                    "strm_status": strm.status_code,
+                    "play_status": play.status_code,
+                    "media_host": urlsplit(target).hostname,
+                    "ranges": ranges,
                     "strm_file": str(exported.resolve()),
                 }
                 report["checks"].append(check)
                 print(json.dumps(check, ensure_ascii=False), flush=True)
         report["success"] = True
-        args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        args.output.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         print(f"Report: {args.output.resolve()}", flush=True)
         if args.preview:
-            print("Preview: " + base_url + "/libvio-check?" + urlencode({"page_url": pages[0]}), flush=True)
+            print(
+                "Preview: " + base_url + "/libvio-check?" + urlencode({"page_url": pages[0]}),
+                flush=True,
+            )
             while thread.is_alive():
                 time.sleep(0.5)
         return 0

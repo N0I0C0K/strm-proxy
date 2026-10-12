@@ -42,8 +42,7 @@ def build_xlys_cookie_jar(settings: AppSettings) -> httpx.Cookies:
         host
         for host in settings.allowed_page_hosts
         if not any(
-            host != other and host.endswith(f".{other}")
-            for other in settings.allowed_page_hosts
+            host != other and host.endswith(f".{other}") for other in settings.allowed_page_hosts
         )
     }
     for domain in cookie_domains:
@@ -114,11 +113,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     "User-Agent": settings.user_agent,
                     "Accept-Encoding": "identity",
                 },
-                cookies=(
-                    build_xlys_cookie_jar(settings)
-                    if with_site_cookies
-                    else None
-                ),
+                cookies=(build_xlys_cookie_jar(settings) if with_site_cookies else None),
             )
 
         async with (
@@ -128,12 +123,16 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 follow_redirects=True,
                 trust_env=False,
                 proxy=settings.upstream_proxy,
-                timeout=httpx.Timeout(settings.request_timeout_seconds, connect=settings.connect_timeout_seconds),
+                timeout=httpx.Timeout(
+                    settings.request_timeout_seconds, connect=settings.connect_timeout_seconds
+                ),
                 headers={"User-Agent": settings.user_agent},
             ) as libvio_control_client,
             httpx.AsyncClient(
                 trust_env=False,
-                timeout=httpx.Timeout(settings.request_timeout_seconds, connect=settings.connect_timeout_seconds),
+                timeout=httpx.Timeout(
+                    settings.request_timeout_seconds, connect=settings.connect_timeout_seconds
+                ),
                 headers={"User-Agent": settings.user_agent},
             ) as libvio_media_client,
         ):
@@ -155,9 +154,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 recent_limit=settings.discovery_recent_limit,
                 year_span=settings.discovery_year_span,
                 movie_rating_threshold=settings.douban_rating_threshold,
-                series_rating_threshold=(
-                    settings.series_douban_rating_threshold
-                ),
+                series_rating_threshold=(settings.series_douban_rating_threshold),
                 cache_ttl_seconds=settings.catalog_cache_ttl_seconds,
             )
             media_library = MediaLibrary(
@@ -193,9 +190,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 media_client,
                 segment_host=settings.segment_host,
                 max_bytes=(
-                    settings.segment_cache_max_mb * 1024 * 1024
-                    if settings.proxy_segments
-                    else 0
+                    settings.segment_cache_max_mb * 1024 * 1024 if settings.proxy_segments else 0
                 ),
                 prefetch_seconds=settings.segment_prefetch_seconds,
             )
@@ -268,9 +263,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
         return JSONResponse(
             status_code=502,
-            content={
-                "detail": f"Upstream request failed: {describe_http_error(exc)}"
-            },
+            content={"detail": f"Upstream request failed: {describe_http_error(exc)}"},
         )
 
     return application
@@ -281,7 +274,9 @@ app = create_app(default_settings)
 
 
 def run() -> None:
-    display_host = "127.0.0.1" if default_settings.host in {"0.0.0.0", "::"} else default_settings.host
+    display_host = (
+        "127.0.0.1" if default_settings.host in {"0.0.0.0", "::"} else default_settings.host
+    )
     if ":" in display_host and not display_host.startswith("["):
         display_host = f"[{display_host}]"
     print(f"Admin page: http://{display_host}:{default_settings.port}/admin/", flush=True)
