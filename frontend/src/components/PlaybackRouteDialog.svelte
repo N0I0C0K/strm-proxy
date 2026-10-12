@@ -62,7 +62,7 @@
         </div>
 
         <div class="route-options" aria-label="可用播放线路">
-          {#each routes.routes as route}
+          {#each routes.routes as route (route.line)}
             <button
               type="button"
               class:active={route.key === routes.selected_route_key}

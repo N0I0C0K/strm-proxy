@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Button, Checkbox, Select, Toolbar } from 'bits-ui'
+  import { SvelteSet } from 'svelte/reactivity'
   import {
     Check,
     ChevronDown,
@@ -38,8 +39,9 @@
 
   function setSelected(xlysId: number, value: boolean) {
     if (selected.has(xlysId) === value) return
-    const next = new Set(selected)
-    value ? next.add(xlysId) : next.delete(xlysId)
+    const next = new SvelteSet(selected)
+    if (value) next.add(xlysId)
+    else next.delete(xlysId)
     onSelectionChange(next)
   }
 
@@ -81,7 +83,7 @@
   }
 
   function toggleAllResults() {
-    const next = new Set(selected)
+    const next = new SvelteSet(selected)
     if (allResultsSelected) media.forEach((item) => next.delete(item.xlys_id))
     else media.forEach((item) => next.add(item.xlys_id))
     onSelectionChange(next)
@@ -260,7 +262,7 @@
           <Select.Portal
             ><Select.Content class="select-content policy-menu" sideOffset={5}
               ><Select.Viewport>
-                {#each policyOptions as option}
+                {#each policyOptions as option (option.value)}
                   <Select.Item class="select-item" value={option.value} label={option.label}>
                     {#snippet children({ selected: itemSelected })}<span>{option.label}</span
                       >{#if itemSelected}<Check size={14} />{/if}{/snippet}

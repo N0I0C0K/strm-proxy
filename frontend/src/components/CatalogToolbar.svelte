@@ -57,7 +57,7 @@
       <Select.Portal
         ><Select.Content class="select-content" sideOffset={6}
           ><Select.Viewport>
-            {#each mediaTypeOptions as option}
+            {#each mediaTypeOptions as option (option.value)}
               <Select.Item class="select-item" value={option.value} label={option.label}>
                 {#snippet children({ selected: itemSelected })}<span>{option.label}</span
                   >{#if itemSelected}<Check size={14} />{/if}{/snippet}
@@ -81,7 +81,7 @@
       <Select.Portal
         ><Select.Content class="select-content" sideOffset={6}
           ><Select.Viewport>
-            {#each providerOptions as option}
+            {#each providerOptions as option (option.value)}
               <Select.Item class="select-item" value={option.value} label={option.label}>
                 {#snippet children({ selected: itemSelected })}<span>{option.label}</span
                   >{#if itemSelected}<Check size={14} />{/if}{/snippet}
@@ -105,7 +105,7 @@
       <Select.Portal
         ><Select.Content class="select-content" sideOffset={6}
           ><Select.Viewport>
-            {#each sortOptions as option}
+            {#each sortOptions as option (option.value)}
               <Select.Item class="select-item" value={option.value} label={option.label}>
                 {#snippet children({ selected: itemSelected })}<span>{option.label}</span
                   >{#if itemSelected}<Check size={14} />{/if}{/snippet}

@@ -102,7 +102,7 @@
         <section class="detail-section">
           <h3>片库策略</h3>
           <div class="detail-policy-actions" aria-label="片库策略">
-            {#each policies as policy}
+            {#each policies as policy (policy)}
               <button
                 type="button"
                 class:active={media.policy === policy}

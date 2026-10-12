@@ -61,7 +61,7 @@
         <strong>近 30 天看过的电视剧</strong>
         {#if recentSeries.length}
           <ul>
-            {#each recentSeries as title}<li>{title}</li>{/each}
+            {#each recentSeries as title, index (index)}<li>{title}</li>{/each}
           </ul>
           <span>将重新读取以上电视剧的详情，并更新当前分集。</span>
         {:else}

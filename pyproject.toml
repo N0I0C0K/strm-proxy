@@ -14,8 +14,31 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.40.2",
     "pytest",
+    "ruff>=0.17.0",
 ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["data", "frontend"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.basedpyright]
+include = ["strm_proxy"]
+stubPath = "typings"
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [project.scripts]
 strm-proxy = "strm_proxy.app:run"

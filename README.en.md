@@ -71,3 +71,27 @@ LIBVIO currently supports the verified ArtPlayer/SmartPlay MP4 flow, with the pl
 WebDAV is for browsing and reading titles; it does not support uploading, renaming, or deleting files. Change the default password before using the service on your LAN. Use HTTPS or a trusted private network across untrusted networks, and do not expose the service directly to the public internet. Only access content you are authorized to use.
 
 For port changes, source sign-in, playback proxy settings, and implementation details, see the [API and WebDAV reference](docs/api-reference.md), [playback resolution guide](docs/play-page-to-strm.md), and [data flow guide](docs/full-data-flow.md) (currently in Chinese).
+
+## Development checks
+
+Install the locked dependencies and run the same checks as CI:
+
+```powershell
+uv sync --locked --group dev
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked basedpyright
+uv run --locked pytest -q
+npm --prefix frontend ci
+npm --prefix frontend run lint
+npm --prefix frontend run format:check
+npm --prefix frontend run check
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Ruff checks and formats Python. Basedpyright uses `strict` for all production code in `strm_proxy`, with ordinary `# type: ignore` disabled and no diagnostic baseline. JSON is typed at the decoding boundary and its structure is validated before fields are used. `typings/` provides types for the PyCryptodome AES interfaces used by the adapters. Tests and live verification scripts are linted and formatted; test doubles are outside the strict type-check scope.
+
+The frontend uses ESLint, Prettier, Svelte/TypeScript checks, and Vitest. Format changes with `uv run ruff format .` and `npm --prefix frontend run format`. Apply safe lint fixes with `uv run ruff check --fix .` and `npm --prefix frontend run lint:fix`.
+
+GitHub Actions runs on pull requests, pushes to `master`, and manual dispatch. Python tests run on Ubuntu with 3.13/3.14 and Windows with 3.13; the frontend uses Node.js 22. Tests use temporary databases and mock upstreams, requiring no credentials, proxy, or live provider. Live verification tools under `scripts/` are run manually and are excluded from CI execution.

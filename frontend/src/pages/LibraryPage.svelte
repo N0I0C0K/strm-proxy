@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { SvelteSet } from 'svelte/reactivity'
   import AccountDialog from '../components/AccountDialog.svelte'
   import AppHeader from '../components/AppHeader.svelte'
   import CatalogMetrics from '../components/CatalogMetrics.svelte'
@@ -37,13 +38,13 @@
   let catalog = initialCatalog
   let pageError = ''
   let pageNotice = ''
-  let syncingProviders = new Set<Provider>()
+  let syncingProviders = new SvelteSet<Provider>()
   $: syncing = syncingProviders.size > 0
   let syncStatusRefreshing = false
   let recentRefreshing = false
-  let refreshing = new Set<number>()
-  let updating = new Set<number>()
-  let selected = new Set<number>()
+  let refreshing = new SvelteSet<number>()
+  let updating = new SvelteSet<number>()
+  let selected = new SvelteSet<number>()
   let bulkBusy = false
   let deleteConfirm = false
   let manualOpen = false
@@ -217,7 +218,7 @@
 
   async function updatePolicy(media: Media, policy: Policy) {
     if (media.policy === policy || updating.has(media.xlys_id)) return
-    updating = new Set(updating).add(media.xlys_id)
+    updating = new SvelteSet(updating).add(media.xlys_id)
     pageError = ''
     try {
       const updated = await adminApi<Media>(credentials, `/media/${media.xlys_id}/policy`, {
@@ -232,7 +233,7 @@
       pageError = error instanceof Error ? error.message : '更新影片策略失败'
     } finally {
       updating.delete(media.xlys_id)
-      updating = new Set(updating)
+      updating = new SvelteSet(updating)
     }
   }
 
@@ -252,7 +253,7 @@
       )
     )
       return
-    syncingProviders = new Set([...syncingProviders, ...targets])
+    syncingProviders = new SvelteSet([...syncingProviders, ...targets])
     const name = provider === 'libvio' ? 'LIBVIO' : provider === 'xlys' ? '雪落影视' : '全部供应商'
     pageError = ''
     pageNotice = ''
@@ -262,7 +263,7 @@
         provider ? `/sync?provider=${provider}` : '/sync',
         { method: 'POST' },
       )
-      selected = new Set()
+      selected = new SvelteSet()
       const count = catalog.movies.filter((item) => !provider || item.provider === provider).length
       pageNotice = `${name}同步完成，当前共 ${count} 个条目`
       if (catalog.discovery_failures?.length) {
@@ -276,7 +277,7 @@
         // Keep the current catalog when the service itself is unavailable.
       }
     } finally {
-      syncingProviders = new Set(
+      syncingProviders = new SvelteSet(
         [...syncingProviders].filter((target) => !targets.includes(target)),
       )
     }
@@ -315,7 +316,7 @@
 
   async function refreshMedia(media: Media) {
     if (syncing || recentRefreshing || refreshing.has(media.xlys_id)) return
-    refreshing = new Set(refreshing).add(media.xlys_id)
+    refreshing = new SvelteSet(refreshing).add(media.xlys_id)
     pageError = ''
     pageNotice = ''
     try {
@@ -331,7 +332,7 @@
       pageError = `刷新《${media.title}》失败：${error instanceof Error ? error.message : '请稍后重试'}`
     } finally {
       refreshing.delete(media.xlys_id)
-      refreshing = new Set(refreshing)
+      refreshing = new SvelteSet(refreshing)
     }
   }
 
@@ -373,7 +374,7 @@
         method: 'PATCH',
         body: JSON.stringify({ xlys_ids: [...selected], policy }),
       })
-      selected = new Set()
+      selected = new SvelteSet()
     } catch (error) {
       pageError = error instanceof Error ? error.message : '批量更新失败'
     } finally {
@@ -390,7 +391,7 @@
         method: 'DELETE',
         body: JSON.stringify({ xlys_ids: [...selected] }),
       })
-      selected = new Set()
+      selected = new SvelteSet()
       deleteConfirm = false
     } catch (error) {
       pageError = error instanceof Error ? error.message : '批量删除失败'
@@ -409,7 +410,7 @@
   function applyImportedCatalog(result: ManualImportResult) {
     if (!result.catalog) return
     catalog = result.catalog
-    selected = new Set()
+    selected = new SvelteSet()
   }
 
   async function openPlaybackRoutes(media: Media) {
@@ -527,7 +528,7 @@
         {refreshing}
         refreshDisabled={syncing || recentRefreshing}
         {bulkBusy}
-        onSelectionChange={(value) => (selected = value)}
+        onSelectionChange={(value) => (selected = new SvelteSet(value))}
         onUpdatePolicy={updatePolicy}
         onRefresh={refreshMedia}
         onOpenDetail={openDetail}

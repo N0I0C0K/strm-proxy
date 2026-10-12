@@ -90,7 +90,7 @@
         </div>
         {#if !busy && source.failures.length}
           <div class="provider-sync-errors">
-            {#each source.failures.slice(0, 2) as failure}<p>{failure}</p>{/each}
+            {#each source.failures.slice(0, 2) as failure, index (index)}<p>{failure}</p>{/each}
             {#if source.failures.length > 2}<p>
                 另有 {source.failures.length - 2} 项未完成，可再次单独同步。
               </p>{/if}

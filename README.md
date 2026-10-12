@@ -71,3 +71,27 @@ LIBVIO 当前支持已验证的 ArtPlayer/SmartPlay MP4 直连流程，视频由
 WebDAV 只用于浏览和读取影片，不提供上传、改名或删除。服务默认监听本机及局域网地址，建议修改默认密码；跨不可信网络使用时请配置 HTTPS 或可信私有网络，不要将服务直接暴露到公网。请仅导入和播放你有权访问的内容。
 
 需要调整端口、来源登录、播放代理等设置，或了解接口和数据链路，请参阅 [API 与 WebDAV 文档](docs/api-reference.md)、[播放解析过程](docs/play-page-to-strm.md)和[完整数据链路](docs/full-data-flow.md)。
+
+## 开发与检查
+
+安装锁定依赖后，运行与 CI 相同的检查：
+
+```powershell
+uv sync --locked --group dev
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked basedpyright
+uv run --locked pytest -q
+npm --prefix frontend ci
+npm --prefix frontend run lint
+npm --prefix frontend run format:check
+npm --prefix frontend run check
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Python 使用 Ruff 检查和格式化。Basedpyright 对全部 `strm_proxy` 生产代码启用 `strict`，禁用普通 `# type: ignore`，不使用诊断基线。外部 JSON 在解码边界声明类型，并在使用字段前验证结构；`typings/` 补充 PyCryptodome AES 所用接口的类型。测试和现场验证脚本接受 lint、格式检查，测试替身不纳入严格类型检查。
+
+前端使用 ESLint、Prettier、Svelte/TypeScript 类型检查和 Vitest。需要自动修正格式时，运行 `uv run ruff format .` 和 `npm --prefix frontend run format`；lint 的安全修正可用 `uv run ruff check --fix .` 和 `npm --prefix frontend run lint:fix`。
+
+GitHub Actions 在 PR、推送 `master` 和手动触发时执行检查。Python 测试覆盖 Ubuntu 的 3.13/3.14 和 Windows 的 3.13；前端使用 Node.js 22。测试使用临时数据库与模拟上游，不需要登录信息、代理或在线供应商。`scripts/` 中的现场验证命令需手动运行，不进入 CI。

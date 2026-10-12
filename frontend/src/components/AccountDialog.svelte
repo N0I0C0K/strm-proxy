@@ -13,21 +13,24 @@
   let busy = false
   let error = ''
 
-  $: if (open && !username) {
-    adminApi<{ username: string }>(credentials, '/credentials')
+  $: updateOpenState(open, credentials)
+
+  function updateOpenState(isOpen: boolean, currentCredentials: string) {
+    if (!isOpen) {
+      username = ''
+      currentPassword = ''
+      password = ''
+      confirmPassword = ''
+      error = ''
+      return
+    }
+    adminApi<{ username: string }>(currentCredentials, '/credentials')
       .then((result) => {
         if (open) username = result.username
       })
       .catch((caught) => {
         error = caught instanceof Error ? caught.message : '读取账号失败'
       })
-  }
-  $: if (!open) {
-    username = ''
-    currentPassword = ''
-    password = ''
-    confirmPassword = ''
-    error = ''
   }
 
   async function save() {
