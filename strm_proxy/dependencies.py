@@ -11,6 +11,7 @@ from .catalog import XlysCatalog
 from .config import AppSettings, DavSettings
 from .database import MediaRepository
 from .library import MediaLibrary
+from .libvio import LibvioResolver
 from .playback_selection import PlaybackCoordinator
 from .segment_cache import SegmentCache
 from .xlys import XlysResolver
@@ -21,6 +22,7 @@ class AppServices:
     """Fully typed application services created for one FastAPI lifespan."""
 
     settings: AppSettings
+    control_http: httpx.AsyncClient
     http: httpx.AsyncClient
     resolver: XlysResolver
     playback: PlaybackCoordinator
@@ -28,6 +30,7 @@ class AppServices:
     catalog: XlysCatalog
     media_repository: MediaRepository
     media_library: MediaLibrary
+    libvio_resolver: LibvioResolver | None = None
 
 
 def set_app_services(application: FastAPI, services: AppServices) -> None:
@@ -70,11 +73,27 @@ def get_http_client(services: ServicesDep) -> httpx.AsyncClient:
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 
 
+def get_control_http_client(services: ServicesDep) -> httpx.AsyncClient:
+    return services.control_http
+
+
+ControlHttpClientDep = Annotated[httpx.AsyncClient, Depends(get_control_http_client)]
+
+
 def get_resolver(services: ServicesDep) -> XlysResolver:
     return services.resolver
 
 
 ResolverDep = Annotated[XlysResolver, Depends(get_resolver)]
+
+
+def get_libvio_resolver(services: ServicesDep) -> LibvioResolver:
+    if services.libvio_resolver is None:
+        raise HTTPException(status_code=503, detail="LIBVIO resolver is unavailable")
+    return services.libvio_resolver
+
+
+LibvioResolverDep = Annotated[LibvioResolver, Depends(get_libvio_resolver)]
 
 
 def get_playback(services: ServicesDep) -> PlaybackCoordinator:

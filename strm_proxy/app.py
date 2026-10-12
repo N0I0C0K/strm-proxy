@@ -18,6 +18,8 @@ from .catalog import XlysCatalog
 from .database import CacheRepository, create_media_repository
 from .dependencies import AppServices, set_app_services
 from .library import MediaLibrary
+from .libvio import LibvioResolver
+from .libvio_catalog import LibvioCatalog
 from .logging_utils import configure_logging, describe_http_error, safe_url_for_log
 from .models import ResolverError
 from .playback_selection import PlaybackCoordinator, PlaybackSelectionCache
@@ -58,7 +60,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     logger.info(
         "event=app_config host=%s port=%d log_level=%s log_file=%s "
         "proxy_segments=%s "
-        "play_selection_cache=%s hls_selection=%s "
+        "play_selection_cache=%s play_selection_ttl_seconds=%s "
+        "hls_selection=%s "
         "segment_cache_enabled=%s segment_prefetch_seconds=%s "
         "segment_cache_max_mb=%d "
         "xlys_login=%s upstream_proxy=%s request_timeout_seconds=%s "
@@ -69,7 +72,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         settings.log_file,
         settings.proxy_segments,
         settings.play_selection_cache,
-        "raw_first" if prefer_raw_segments else "first_healthy",
+        settings.play_selection_ttl_seconds,
+        "raw_first_benchmark" if prefer_raw_segments else "fastest_benchmark",
         settings.proxy_segments and settings.segment_cache_max_mb > 0,
         settings.segment_prefetch_seconds,
         settings.segment_cache_max_mb,
@@ -86,28 +90,60 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         logger.info("event=app_start")
         repository = create_media_repository(settings.database_path)
         repository.initialize_credentials(settings.dav.username, settings.dav.password)
-        # A custom transport bypasses HTTPX's environment/system proxy lookup.
-        transport = (
-            httpx.AsyncHTTPTransport(retries=2, proxy=settings.upstream_proxy)
-            if settings.upstream_proxy is not None
-            else None
-        )
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            trust_env=True,
-            timeout=httpx.Timeout(
-                settings.request_timeout_seconds,
-                connect=settings.connect_timeout_seconds,
-            ),
-            transport=transport,
-            headers={
-                "User-Agent": settings.user_agent,
-                "Accept-Encoding": "identity",
-            },
-            cookies=build_xlys_cookie_jar(settings),
-        ) as client:
+
+        def upstream_client(*, with_site_cookies: bool) -> httpx.AsyncClient:
+            # Each traffic class gets its own connection pool. A custom
+            # transport bypasses HTTPX's environment/system proxy lookup.
+            transport = (
+                httpx.AsyncHTTPTransport(
+                    retries=2,
+                    proxy=settings.upstream_proxy,
+                )
+                if settings.upstream_proxy is not None
+                else None
+            )
+            return httpx.AsyncClient(
+                follow_redirects=True,
+                trust_env=True,
+                timeout=httpx.Timeout(
+                    settings.request_timeout_seconds,
+                    connect=settings.connect_timeout_seconds,
+                ),
+                transport=transport,
+                headers={
+                    "User-Agent": settings.user_agent,
+                    "Accept-Encoding": "identity",
+                },
+                cookies=(
+                    build_xlys_cookie_jar(settings)
+                    if with_site_cookies
+                    else None
+                ),
+            )
+
+        async with (
+            upstream_client(with_site_cookies=True) as control_client,
+            upstream_client(with_site_cookies=False) as media_client,
+            httpx.AsyncClient(
+                follow_redirects=True,
+                trust_env=False,
+                proxy=settings.upstream_proxy,
+                timeout=httpx.Timeout(settings.request_timeout_seconds, connect=settings.connect_timeout_seconds),
+                headers={"User-Agent": settings.user_agent},
+            ) as libvio_control_client,
+            httpx.AsyncClient(
+                trust_env=False,
+                timeout=httpx.Timeout(settings.request_timeout_seconds, connect=settings.connect_timeout_seconds),
+                headers={"User-Agent": settings.user_agent},
+            ) as libvio_media_client,
+        ):
+            libvio_resolver = LibvioResolver(
+                libvio_control_client,
+                libvio_media_client,
+                cache_ttl_seconds=settings.cache_ttl_seconds,
+            )
             resolver = XlysResolver(
-                client,
+                control_client,
                 allowed_hosts=settings.allowed_page_hosts,
                 cache_ttl_seconds=settings.cache_ttl_seconds,
                 member_access_enabled=settings.has_xlys_login,
@@ -115,7 +151,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 prefer_raw_segments=prefer_raw_segments,
             )
             catalog = XlysCatalog(
-                client,
+                control_client,
                 recent_limit=settings.discovery_recent_limit,
                 year_span=settings.discovery_year_span,
                 movie_rating_threshold=settings.douban_rating_threshold,
@@ -127,15 +163,24 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             media_library = MediaLibrary(
                 repository,
                 catalog,
+                libvio_catalog=LibvioCatalog(
+                    libvio_control_client,
+                    recent_limit=settings.discovery_recent_limit,
+                    year_span=settings.discovery_year_span,
+                    movie_rating_threshold=settings.douban_rating_threshold,
+                    series_rating_threshold=settings.series_douban_rating_threshold,
+                    cache_ttl_seconds=settings.catalog_cache_ttl_seconds,
+                ),
             )
             playback = PlaybackCoordinator(
                 PlaybackSelectionCache(
                     CacheRepository(repository.engine),
                     enabled=settings.play_selection_cache,
+                    ttl_seconds=settings.play_selection_ttl_seconds,
                 )
             )
             for media in repository.list_media():
-                if media.media_type != "series":
+                if media.media_type != "series" or media.provider != "xlys":
                     continue
                 playback.cache.migrate_legacy_series_route(
                     media.xlys_id,
@@ -145,7 +190,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                     ),
                 )
             segment_cache = SegmentCache(
-                client,
+                media_client,
                 segment_host=settings.segment_host,
                 max_bytes=(
                     settings.segment_cache_max_mb * 1024 * 1024
@@ -158,13 +203,15 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 application,
                 AppServices(
                     settings=settings,
-                    http=client,
+                    control_http=control_client,
+                    http=media_client,
                     resolver=resolver,
                     playback=playback,
                     segment_cache=segment_cache,
                     catalog=catalog,
                     media_repository=repository,
                     media_library=media_library,
+                    libvio_resolver=libvio_resolver,
                 ),
             )
             try:

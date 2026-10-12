@@ -35,13 +35,17 @@ ManifestResult = tuple[ResolvedPage, StreamCandidate, str]
 DirectMediaResult = tuple[ResolvedPage, str]
 HlsMediaKind = Literal["raw", "wrapped", "unhealthy"]
 
+PLAYBACK_PROBE_BYTES = 512 * 1024
+
 _DIRECT_MEDIA_MARKERS = (
     "tos-alisg-v-0000",
     "tos-o-maliva-0000-us",
+    "tos-maliva-o-0000-us",
     "tos-alisg-i-0000",
 )
 _DIRECT_MEDIA_HOST_SUFFIXES = (
     "ibyteimg.com",
+    "ibytedtos.com",
     "bytegecko-i18n.com",
     "bytepluscdn.com",
     "fdmimgs.com",
@@ -294,6 +298,34 @@ class XlysResolver:
         page_url: str,
         source: str,
     ) -> DirectMediaResult:
+        return await self._resolve_direct_media(
+            page_url,
+            source,
+            probe_bytes=64,
+            use_range=True,
+        )
+
+    async def benchmark_direct_media(
+        self,
+        page_url: str,
+        source: str,
+    ) -> DirectMediaResult:
+        """Resolve and stream-sample a direct source with the HLS byte budget."""
+        return await self._resolve_direct_media(
+            page_url,
+            source,
+            probe_bytes=PLAYBACK_PROBE_BYTES,
+            use_range=False,
+        )
+
+    async def _resolve_direct_media(
+        self,
+        page_url: str,
+        source: str,
+        *,
+        probe_bytes: int,
+        use_range: bool,
+    ) -> DirectMediaResult:
         if source not in {"tos", "member"}:
             raise ResolverError(f"Unsupported direct media source: {source}")
 
@@ -334,7 +366,11 @@ class XlysResolver:
                 source,
                 safe_url_for_log(media_url),
             )
-            if await self._probe_direct_media(media_url):
+            if await self._probe_direct_media(
+                media_url,
+                sample_bytes=probe_bytes,
+                use_range=use_range,
+            ):
                 logger.info(
                     "event=direct_source_selected pid=%d source=%s target=%s",
                     resolved.pid,
@@ -580,12 +616,23 @@ class XlysResolver:
         )
         return media_url
 
-    async def _probe_direct_media(self, media_url: str) -> bool:
+    async def _probe_direct_media(
+        self,
+        media_url: str,
+        *,
+        sample_bytes: int = 64,
+        use_range: bool = True,
+    ) -> bool:
+        headers = (
+            {"Range": f"bytes=0-{sample_bytes - 1}"}
+            if use_range
+            else None
+        )
         try:
             async with self.client.stream(
                 "GET",
                 media_url,
-                headers={"Range": "bytes=0-63"},
+                headers=headers,
             ) as response:
                 if response.status_code not in {200, 206}:
                     logger.debug(
@@ -596,8 +643,9 @@ class XlysResolver:
                     return False
                 prefix = b""
                 async for chunk in response.aiter_bytes():
-                    prefix += chunk
-                    if len(prefix) >= 64:
+                    remaining = sample_bytes - len(prefix)
+                    prefix += chunk[:remaining]
+                    if len(prefix) >= sample_bytes:
                         break
         except httpx.HTTPError:
             return False
@@ -667,19 +715,17 @@ class XlysResolver:
                     "content-type",
                     "",
                 ).lower()
-                prefix = bytearray()
+                sample = bytearray()
                 ts_offset: int | None = None
                 is_fmp4 = False
-                async for chunk in response.aiter_bytes(chunk_size=1024):
-                    remaining = MAX_SEGMENT_PREFIX_BYTES - len(prefix)
-                    prefix.extend(chunk[:remaining])
-                    ts_offset = find_mpeg_ts_offset(prefix)
-                    is_fmp4 = b"ftyp" in prefix[:32]
-                    if (
-                        ts_offset is not None
-                        or is_fmp4
-                        or len(prefix) >= MAX_SEGMENT_PREFIX_BYTES
-                    ):
+                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                    remaining = PLAYBACK_PROBE_BYTES - len(sample)
+                    sample.extend(chunk[:remaining])
+                    inspection_prefix = sample[:MAX_SEGMENT_PREFIX_BYTES]
+                    if ts_offset is None:
+                        ts_offset = find_mpeg_ts_offset(inspection_prefix)
+                    is_fmp4 = is_fmp4 or b"ftyp" in inspection_prefix[:32]
+                    if len(sample) >= PLAYBACK_PROBE_BYTES:
                         break
         except httpx.HTTPError:
             return "unhealthy"
@@ -698,7 +744,7 @@ class XlysResolver:
             content_type or "unknown",
             media_kind,
             ts_offset if ts_offset is not None else "none",
-            len(prefix),
+            len(sample),
         )
         return media_kind
 

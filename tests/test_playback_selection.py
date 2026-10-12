@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterator
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -67,6 +68,32 @@ def test_reselecting_hls_route_rotates_revision(
     assert cache.get(resolved) == second
 
 
+def test_automatic_selection_expires_but_manual_override_does_not() -> None:
+    media_repository = create_media_repository(":memory:")
+    repository = CacheRepository(media_repository.engine)
+    cache = PlaybackSelectionCache(repository, ttl_seconds=7200)
+    resolved = _resolved_page()
+
+    try:
+        before = datetime.now(timezone.utc)
+        cache.remember_hls(resolved, 0)
+        automatic = repository.get_with_expiration(
+            f"playback-selection:{PAGE_URL}"
+        )
+        cache.remember_hls(resolved, 1, manual_override=True)
+        manual = repository.get_with_expiration(
+            f"playback-selection:{PAGE_URL}"
+        )
+    finally:
+        media_repository.close()
+
+    assert automatic is not None
+    assert automatic[1] is not None
+    assert 7199 <= (automatic[1] - before).total_seconds() <= 7201
+    assert manual is not None
+    assert manual[1] is None
+
+
 def test_cache_invalidates_hls_when_candidate_changes(
     cache: PlaybackSelectionCache,
 ) -> None:
@@ -121,6 +148,31 @@ def test_named_hls_route_survives_url_and_line_order_changes(
     assert selection.route_name == "IPlay"
     assert selection.candidate_url == "https://example/fast-new.m3u8#IPlay"
     assert selection.revision == original.revision
+
+
+def test_duplicate_route_name_falls_back_to_exact_candidate_identity(
+    cache: PlaybackSelectionCache,
+) -> None:
+    resolved = _resolved_page(
+        candidates=(
+            StreamCandidate(
+                kind="m3u8",
+                url="https://example/first.m3u8#iplay",
+            ),
+            StreamCandidate(
+                kind="m3u8_2",
+                url="https://example/second.m3u8#iplay",
+            ),
+        )
+    )
+
+    remembered = cache.remember_hls(resolved, 1)
+    selection = cache.get(resolved)
+
+    assert remembered.route_name is None
+    assert selection is not None
+    assert selection.line == 1
+    assert selection.candidate_url == "https://example/second.m3u8#iplay"
 
 
 def test_legacy_hls_cache_is_upgraded_to_route_name() -> None:

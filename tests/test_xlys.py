@@ -8,6 +8,7 @@ import pytest
 
 from strm_proxy.models import ResolvedPage, ResolverError, StreamCandidate
 from strm_proxy.xlys import (
+    PLAYBACK_PROBE_BYTES,
     XlysResolver,
     create_signature,
     direct_media_url_candidates,
@@ -99,6 +100,21 @@ def test_direct_media_candidates_rewrite_tos_objects_to_playable_cdn() -> None:
     )
 
 
+def test_direct_media_candidates_accept_current_bytedance_tos_variant() -> None:
+    raw_url = (
+        "https://sf16-starling-sg.ibytedtos.com/obj/"
+        "tos-maliva-o-0000-us/example-object"
+    )
+
+    candidates = direct_media_url_candidates(raw_url)
+
+    assert candidates == (
+        "https://p16-hera-sign-va.ibyteimg.com/obj/"
+        "tos-maliva-o-0000-us/example-object",
+        raw_url,
+    )
+
+
 def test_rejects_non_target_urls() -> None:
     with pytest.raises(ResolverError):
         validate_page_url(PAGE_URL.replace("www.xlys02.com", "example.com"), ("www.xlys02.com",))
@@ -170,6 +186,7 @@ def test_resolver_caches_page_and_manifest() -> None:
 
 def test_resolver_discovers_and_probes_tos_direct_media() -> None:
     calls: Counter[str] = Counter()
+    ranges: list[str | None] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         calls[request.url.path] += 1
@@ -200,11 +217,14 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
                 },
             )
         if request.url.host == "p16-hera-sign-va.ibyteimg.com":
-            assert request.headers["range"] == "bytes=0-63"
+            ranges.append(request.headers.get("range"))
             return httpx.Response(
                 206,
                 headers={"Content-Type": "video/mp4"},
-                content=b"\x00\x00\x00\x20ftypisom" + b"x" * 52,
+                content=(
+                    b"\x00\x00\x00\x20ftypisom"
+                    + b"x" * PLAYBACK_PROBE_BYTES
+                ),
             )
         return httpx.Response(404)
 
@@ -217,6 +237,7 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
                 PAGE_URL,
                 "tos",
             )
+            await resolver.benchmark_direct_media(PAGE_URL, "tos")
 
         assert resolved.tos_available is True
         assert resolved.member_token == "888"
@@ -225,7 +246,11 @@ def test_resolver_discovers_and_probes_tos_direct_media() -> None:
         )
 
     asyncio.run(scenario())
-    assert calls["/god/204486"] == 1
+    assert calls["/god/204486"] == 2
+    assert ranges == [
+        "bytes=0-63",
+        None,
+    ]
 
 
 def test_member_source_requires_configured_login() -> None:
@@ -477,6 +502,42 @@ def test_hls_probe_streams_until_it_finds_a_deep_wrapper() -> None:
 
     asyncio.run(scenario())
     assert request_count == 1
+
+
+def test_hls_probe_reads_fixed_sample_after_format_is_identified() -> None:
+    class CountingStream(httpx.AsyncByteStream):
+        bytes_sent = 0
+
+        async def __aiter__(self):
+            first = _mpeg_ts_payload() + b"x" * (64 * 1024 - 564)
+            chunks = [first] + [b"x" * (64 * 1024)] * 7
+            for chunk in chunks:
+                self.bytes_sent += len(chunk)
+                yield chunk
+
+    stream = CountingStream()
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/octet-stream"},
+            stream=stream,
+        )
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handle),
+        ) as client:
+            resolver = XlysResolver(client)
+            media_kind = await resolver._probe_hls_media(
+                "https://vod.xl01.me/sample.ts",
+                PAGE_URL,
+            )
+
+        assert media_kind == "raw"
+
+    asyncio.run(scenario())
+    assert stream.bytes_sent == PLAYBACK_PROBE_BYTES
 
 
 def test_parallel_hls_probe_does_not_wait_for_slow_preferred_line() -> None:

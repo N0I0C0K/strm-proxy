@@ -13,6 +13,7 @@ from strm_proxy.config import AppSettings, DavSettings
 from strm_proxy.database import MoviePolicy
 from strm_proxy.dependencies import (
     get_app_services,
+    get_control_http_client,
     get_http_client,
     get_playback,
     get_resolver,
@@ -309,6 +310,7 @@ def test_admin_manual_movie_import_keeps_movie() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/juqing/27101.htm"
+        assert request.headers["cookie"] == "username=test-user"
         return httpx.Response(
             200,
             text=html,
@@ -316,8 +318,13 @@ def test_admin_manual_movie_import_keeps_movie() -> None:
         )
 
     application = create_app(AppSettings(database_path=":memory:"))
-    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-    application.dependency_overrides[get_http_client] = lambda: mock_client
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle), cookies={"username": "test-user"})
+    application.dependency_overrides[get_control_http_client] = lambda: mock_client
+
+    def reject_media_pool():
+        raise AssertionError("Admin detail fetch must use the control connection pool")
+
+    application.dependency_overrides[get_http_client] = reject_media_pool
     try:
         with TestClient(application) as client:
             response = client.post(
@@ -354,7 +361,7 @@ def test_admin_manual_series_import_writes_series_and_episodes() -> None:
     mock_client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=html))
     )
-    application.dependency_overrides[get_http_client] = lambda: mock_client
+    application.dependency_overrides[get_control_http_client] = lambda: mock_client
     try:
         with TestClient(application) as client:
             response = client.post(
@@ -514,7 +521,7 @@ def test_admin_refreshes_one_series_and_preserves_policy() -> None:
     mock_client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=html))
     )
-    application.dependency_overrides[get_http_client] = lambda: mock_client
+    application.dependency_overrides[get_control_http_client] = lambda: mock_client
     try:
         with TestClient(application) as client:
             repository = get_app_services(application).media_repository
@@ -547,7 +554,7 @@ def test_admin_refreshes_movie_without_changing_policy_or_dav_name() -> None:
     mock_client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=html))
     )
-    application.dependency_overrides[get_http_client] = lambda: mock_client
+    application.dependency_overrides[get_control_http_client] = lambda: mock_client
     try:
         with TestClient(application) as client:
             repository = get_app_services(application).media_repository
@@ -606,7 +613,7 @@ def test_recent_series_refresh_uses_successful_get_playback_only() -> None:
 
     application = create_app(AppSettings(database_path=":memory:"))
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-    application.dependency_overrides[get_http_client] = lambda: mock_client
+    application.dependency_overrides[get_control_http_client] = lambda: mock_client
     application.dependency_overrides[get_playback] = Playback
     try:
         with TestClient(application) as client:

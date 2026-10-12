@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from collections.abc import AsyncIterator
 import logging
 import time
@@ -13,6 +14,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, StreamingResp
 
 from .dependencies import (
     HttpClientDep,
+    LibvioResolverDep,
     MediaRepositoryDep,
     PlaybackCoordinatorDep,
     ResolverDep,
@@ -21,6 +23,7 @@ from .dependencies import (
 )
 from .hls import iter_aligned_mpeg_ts, prepare_mpeg_ts_stream, rewrite_manifest
 from .logging_utils import safe_url_for_log
+from .libvio import is_libvio_url
 from .models import ResolverError
 from .playback_selection import PlaybackUnavailable
 from .segment_cache import SegmentClaim, SegmentPayload
@@ -35,7 +38,9 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/resolve")
-async def resolve(resolver: ResolverDep, page_url: str = Query(...)) -> dict:
+async def resolve(resolver: ResolverDep, libvio: LibvioResolverDep, page_url: str = Query(...)) -> dict:
+    if is_libvio_url(page_url):
+        return {"provider": "libvio", "source": "direct", **asdict(await libvio.resolve(page_url))}
     resolved = await resolver.resolve_page(page_url)
     logger.info(
         "event=resolve_response pid=%d hls_lines=%d tos=%s member=%s",
@@ -75,11 +80,21 @@ async def resolve(resolver: ResolverDep, page_url: str = Query(...)) -> dict:
 async def play(
     request: Request,
     resolver: ResolverDep,
+    libvio: LibvioResolverDep,
     playback: PlaybackCoordinatorDep,
     repository: MediaRepositoryDep,
     page_url: str = Query(...),
     source: Literal["auto", "hls", "tos", "member"] = Query("auto"),
 ) -> RedirectResponse:
+    if is_libvio_url(page_url):
+        if source != "auto":
+            raise HTTPException(status_code=400, detail="LIBVIO currently supports automatic direct MP4 playback")
+        result = await libvio.resolve(page_url)
+        if request.method == "GET":
+            repository.mark_series_watched(result.play_page_url)
+        logger.info("event=play_selected provider=libvio mode=direct route=%s episode=%d",
+                    result.route_name, result.episode_number)
+        return _no_store_redirect(result.media_url)
     logger.info(
         "event=play_request page=%s source=%s",
         safe_url_for_log(page_url),

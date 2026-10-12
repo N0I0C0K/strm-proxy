@@ -72,6 +72,8 @@ def test_unified_tables_contain_the_agreed_business_fields() -> None:
 
     assert media_columns == {
         "xlys_id",
+        "provider",
+        "source_media_id",
         "media_type",
         "title",
         "year",

@@ -116,10 +116,30 @@ def test_settings_reject_invalid_play_selection_cache_environment(
         AppSettings.from_environment()
 
 
-def test_segment_cache_defaults_to_ten_minutes_and_128_mb() -> None:
+def test_play_selection_ttl_defaults_to_two_hours() -> None:
+    assert AppSettings().play_selection_ttl_seconds == 7200
+
+
+def test_settings_read_play_selection_ttl_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STRM_PROXY_PLAY_SELECTION_TTL_SECONDS", "3600")
+
+    assert AppSettings.from_environment().play_selection_ttl_seconds == 3600
+
+
+def test_settings_reject_non_positive_play_selection_ttl() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="STRM_PROXY_PLAY_SELECTION_TTL_SECONDS",
+    ):
+        AppSettings(play_selection_ttl_seconds=0).validate()
+
+
+def test_segment_cache_defaults_to_one_minute_and_128_mb() -> None:
     settings = AppSettings()
 
-    assert settings.segment_prefetch_seconds == 600
+    assert settings.segment_prefetch_seconds == 60
     assert settings.segment_cache_max_mb == 128
 
 
@@ -187,6 +207,16 @@ def test_upstream_client_uses_system_proxy_without_override(
     with TestClient(app):
         client = get_app_services(app).http
         assert client._transport_for_url(httpx.URL("https://example.invalid/")) is not client._transport
+
+
+def test_control_and_media_requests_use_independent_connection_pools() -> None:
+    app = create_app(AppSettings(database_path=":memory:"))
+
+    with TestClient(app):
+        services = get_app_services(app)
+        assert services.control_http is not services.http
+        assert services.resolver.client is services.control_http
+        assert services.segment_cache.client is services.http
 
 
 def test_upstream_proxy_override_replaces_system_proxy(

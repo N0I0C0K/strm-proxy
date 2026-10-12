@@ -52,7 +52,8 @@ class AppSettings:
     log_file: str | None = "data/strm-proxy.log"
     proxy_segments: bool = True
     play_selection_cache: bool = True
-    segment_prefetch_seconds: float = 600.0
+    play_selection_ttl_seconds: float = 7200.0
+    segment_prefetch_seconds: float = 60.0
     segment_cache_max_mb: int = 128
     user_agent: str = DEFAULT_USER_AGENT
     upstream_proxy: str | None = None
@@ -89,8 +90,11 @@ class AppSettings:
                 "STRM_PROXY_PLAY_SELECTION_CACHE",
                 default=True,
             ),
+            play_selection_ttl_seconds=float(
+                os.getenv("STRM_PROXY_PLAY_SELECTION_TTL_SECONDS", "7200")
+            ),
             segment_prefetch_seconds=float(
-                os.getenv("STRM_PROXY_SEGMENT_PREFETCH_SECONDS", "600")
+                os.getenv("STRM_PROXY_SEGMENT_PREFETCH_SECONDS", "60")
             ),
             segment_cache_max_mb=int(
                 os.getenv("STRM_PROXY_SEGMENT_CACHE_MAX_MB", "128")
@@ -157,6 +161,10 @@ class AppSettings:
             )
         if self.cache_ttl_seconds <= 0:
             raise RuntimeError("STRM_PROXY_CACHE_TTL must be positive")
+        if self.play_selection_ttl_seconds <= 0:
+            raise RuntimeError(
+                "STRM_PROXY_PLAY_SELECTION_TTL_SECONDS must be positive"
+            )
         if self.request_timeout_seconds <= 0:
             raise RuntimeError("STRM_PROXY_REQUEST_TIMEOUT must be positive")
         if self.connect_timeout_seconds <= 0:
