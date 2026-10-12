@@ -124,10 +124,11 @@
           <div class="movie-title-line">
             <h3><button class="movie-title-button" type="button" onclick={() => onOpenDetail(item)}>{item.title}</button></h3>
             <button class="route-button" type="button" onclick={() => onRefresh(item)} disabled={refreshDisabled || refreshing.has(item.xlys_id)} title="从来源刷新影片信息和分集" aria-label={`刷新《${item.title}》`}><RefreshCw class={refreshing.has(item.xlys_id) ? 'spin' : undefined} size={13} /></button>
-            <button class="route-button" type="button" onclick={() => onConfigureRoute(item)} title="选择播放线路" aria-label={`选择《${item.title}》的播放线路`}><Waypoints size={13} /></button>
+            {#if item.provider !== 'libvio'}<button class="route-button" type="button" onclick={() => onConfigureRoute(item)} title="选择播放线路" aria-label={`选择《${item.title}》的播放线路`}><Waypoints size={13} /></button>{/if}
           </div>
           <div class="media-tags">
             <span class:series-kind={item.kind === 'series'} class="media-kind">{item.kind === 'series' ? '电视剧' : '电影'}</span>
+            <span>{item.provider === 'libvio' ? 'LIBVIO' : '雪落影视'}</span>
             {#if item.kind === 'series'}<span class="episode-chip" title={`当前已收录 ${item.available_episode_count} 集`}>{item.available_episode_count} 集</span>{/if}
             {#if item.year}<span>{item.year}</span>{/if}
             {#if item.douban_rating !== null}<span class="rating-chip"><Star size={10} fill="currentColor" />{item.douban_rating.toFixed(1)}</span>{/if}

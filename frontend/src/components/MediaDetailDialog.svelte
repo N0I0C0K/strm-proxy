@@ -57,7 +57,7 @@
             {/if}
             <div class="detail-primary-actions">
               <button type="button" onclick={onRefresh} disabled={busy || loading}><RefreshCw class={busy ? 'spin' : undefined} size={15} />刷新影片</button>
-              <button type="button" onclick={onConfigureRoute} disabled={busy || loading}><Waypoints size={15} />播放线路</button>
+              {#if media.provider !== 'libvio'}<button type="button" onclick={onConfigureRoute} disabled={busy || loading}><Waypoints size={15} />播放线路</button>{/if}
             </div>
           </div>
         </div>
@@ -88,7 +88,9 @@
             <div><dt>来源更新</dt><dd>{formatDate(detail.source_updated_on)}</dd></div>
             <div><dt>上次检查</dt><dd>{formatDateTime(detail.last_checked_at)}</dd></div>
             <div><dt>最近播放</dt><dd>{formatDateTime(detail.last_watched_at)}</dd></div>
-            <div><dt>来源 ID</dt><dd>{detail.xlys_id}</dd></div>
+            <div><dt>供应商</dt><dd>{detail.provider === 'libvio' ? 'LIBVIO' : '雪落影视'}</dd></div>
+            <div><dt>来源 ID</dt><dd>{detail.source_media_id}</dd></div>
+            {#if detail.provider === 'libvio'}<div><dt>播放方式</dt><dd>自动选择直连线路</dd></div>{/if}
             {#if detail.kind === 'series'}<div><dt>季度</dt><dd>{detail.season_number ?? '未标注'}</dd></div>{/if}
             <div class="detail-wide"><dt>WebDAV 名称</dt><dd>{detail.dav_filename}</dd></div>
           </dl>

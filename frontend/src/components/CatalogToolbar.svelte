@@ -1,10 +1,11 @@
 <script lang="ts">
   import { Button, Select, ToggleGroup } from 'bits-ui'
   import { Check, ChevronDown, Grid2X2, List, MousePointer2, Search } from 'lucide-svelte'
-  import { mediaTypeOptions, sortOptions, type LayoutMode, type MediaTypeFilter } from '../lib/types'
+  import { mediaTypeOptions, providerOptions, sortOptions, type LayoutMode, type MediaTypeFilter, type ProviderFilter } from '../lib/types'
 
   export let layoutMode: LayoutMode
   export let mediaTypeFilter: MediaTypeFilter
+  export let providerFilter: ProviderFilter
   export let sortOrder: string
   export let query: string
   export let resultCount: number
@@ -24,6 +25,16 @@
       <Select.Trigger class="sort-box type-filter" aria-label="影片类型筛选"><Select.Value /><ChevronDown size={14} /></Select.Trigger>
       <Select.Portal><Select.Content class="select-content" sideOffset={6}><Select.Viewport>
         {#each mediaTypeOptions as option}
+          <Select.Item class="select-item" value={option.value} label={option.label}>
+            {#snippet children({ selected: itemSelected })}<span>{option.label}</span>{#if itemSelected}<Check size={14} />{/if}{/snippet}
+          </Select.Item>
+        {/each}
+      </Select.Viewport></Select.Content></Select.Portal>
+    </Select.Root>
+    <Select.Root type="single" value={providerFilter} onValueChange={(value) => { if (value === 'all' || value === 'libvio' || value === 'xlys') providerFilter = value }} items={providerOptions}>
+      <Select.Trigger class="sort-box provider-filter" aria-label="供应商筛选"><Select.Value /><ChevronDown size={14} /></Select.Trigger>
+      <Select.Portal><Select.Content class="select-content" sideOffset={6}><Select.Viewport>
+        {#each providerOptions as option}
           <Select.Item class="select-item" value={option.value} label={option.label}>
             {#snippet children({ selected: itemSelected })}<span>{option.label}</span>{#if itemSelected}<Check size={14} />{/if}{/snippet}
           </Select.Item>

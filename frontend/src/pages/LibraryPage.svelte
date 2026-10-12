@@ -10,10 +10,11 @@
   import MediaCatalog from '../components/MediaCatalog.svelte'
   import MediaDetailDialog from '../components/MediaDetailDialog.svelte'
   import PlaybackRouteDialog from '../components/PlaybackRouteDialog.svelte'
+  import ProviderSyncPanel from '../components/ProviderSyncPanel.svelte'
   import WebDavConnect from '../components/WebDavConnect.svelte'
   import { adminApi } from '../lib/admin-api'
   import { filterAndSortMedia, recount } from '../lib/catalog'
-  import type { Catalog, LayoutMode, ManualImportResult, Media, MediaDetail, MediaTypeFilter, PlaybackRoutes, Policy, RefreshResult, RecentRefreshResult } from '../lib/types'
+  import type { Catalog, LayoutMode, ManualImportResult, Media, MediaDetail, MediaTypeFilter, PlaybackRoutes, Policy, Provider, ProviderFilter, RefreshResult, RecentRefreshResult } from '../lib/types'
 
   export let credentials: string
   export let initialCatalog: Catalog
@@ -23,7 +24,9 @@
   let catalog = initialCatalog
   let pageError = ''
   let pageNotice = ''
-  let syncing = false
+  let syncingProviders = new Set<Provider>()
+  $: syncing = syncingProviders.size > 0
+  let syncStatusRefreshing = false
   let recentRefreshing = false
   let refreshing = new Set<number>()
   let updating = new Set<number>()
@@ -41,6 +44,7 @@
   let query = ''
   let policyFilter: 'all' | Policy = 'all'
   let mediaTypeFilter: MediaTypeFilter = 'all'
+  let providerFilter: ProviderFilter = 'all'
   let sortOrder = 'updated-desc'
   let layoutMode: LayoutMode = 'list'
   let catalogPanel: HTMLElement
@@ -56,9 +60,9 @@
   let detailError = ''
   let detailNotice = ''
 
-  $: sortedMedia = filterAndSortMedia(catalog.movies, query, policyFilter, mediaTypeFilter, sortOrder)
+  $: sortedMedia = filterAndSortMedia(catalog.movies, query, policyFilter, mediaTypeFilter, sortOrder, providerFilter)
   $: {
-    const signature = JSON.stringify([query, policyFilter, mediaTypeFilter, sortOrder, layoutMode, pageSize])
+    const signature = JSON.stringify([query, policyFilter, mediaTypeFilter, providerFilter, sortOrder, layoutMode, pageSize])
     if (signature !== lastFilterSignature) {
       page = 1
       lastFilterSignature = signature
@@ -78,10 +82,15 @@
     const observer = new ResizeObserver(measure)
     observer.observe(catalogPanel)
     window.addEventListener('resize', measure)
+    const syncStatusTimer = window.setInterval(() => refreshSyncStatus(), 5000)
+    const onFocus = () => refreshSyncStatus(true)
+    window.addEventListener('focus', onFocus)
     measure()
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.clearInterval(syncStatusTimer)
+      window.removeEventListener('focus', onFocus)
     }
   })
 
@@ -178,18 +187,44 @@
     }
   }
 
-  async function syncCatalog() {
-    if (syncing || recentRefreshing || refreshing.size) return
-    syncing = true
+  async function syncCatalog(provider?: Provider) {
+    const targets: Provider[] = provider ? [provider] : (catalog.provider_syncs?.map((item) => item.provider) ?? ['xlys', 'libvio'])
+    if (recentRefreshing || refreshing.size || targets.some((target) => syncingProviders.has(target) || catalog.provider_syncs?.some((source) => source.provider === target && source.status === 'syncing'))) return
+    syncingProviders = new Set([...syncingProviders, ...targets])
+    const name = provider === 'libvio' ? 'LIBVIO' : provider === 'xlys' ? '雪落影视' : '全部供应商'
     pageError = ''
     pageNotice = ''
     try {
-      catalog = await adminApi<Catalog>(credentials, '/sync', { method: 'POST' })
+      catalog = await adminApi<Catalog>(credentials, provider ? `/sync?provider=${provider}` : '/sync', { method: 'POST' })
       selected = new Set()
+      const count = catalog.movies.filter((item) => !provider || item.provider === provider).length
+      pageNotice = `${name}同步完成，当前共 ${count} 个条目`
+      if (catalog.discovery_failures?.length) {
+        pageNotice = `${name}同步部分完成，请查看供应商状态。`
+      }
     } catch (error) {
-      pageError = error instanceof Error ? error.message : '同步失败，请稍后重试'
+      pageError = `${name}同步失败：${error instanceof Error ? error.message : '请稍后重试'}`
+      try {
+        catalog = await adminApi<Catalog>(credentials, '/media')
+      } catch {
+        // Keep the current catalog when the service itself is unavailable.
+      }
     } finally {
-      syncing = false
+      syncingProviders = new Set([...syncingProviders].filter((target) => !targets.includes(target)))
+    }
+  }
+
+  async function refreshSyncStatus(force = false) {
+    if (syncStatusRefreshing || syncing || recentRefreshing || refreshing.size || updating.size || bulkBusy || detailActionBusy) return
+    if (!force && !catalog.provider_syncs?.some((source) => source.status === 'syncing')) return
+    syncStatusRefreshing = true
+    try {
+      const result = await adminApi<Catalog>(credentials, '/media')
+      if (!syncing && !recentRefreshing && !refreshing.size && !updating.size && !bulkBusy && !detailActionBusy) catalog = result
+    } catch {
+      // Retry on the next poll or when the user returns to this window.
+    } finally {
+      syncStatusRefreshing = false
     }
   }
 
@@ -339,15 +374,17 @@
     query = ''
     policyFilter = 'all'
     mediaTypeFilter = 'all'
+    providerFilter = 'all'
   }
 </script>
 
 <div class="app-shell">
-  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} recentSeries={catalog.recently_watched_series} onSync={syncCatalog} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
+  <AppHeader {syncing} {recentRefreshing} itemRefreshing={refreshing.size > 0} recentSeriesCount={catalog.recently_watched_series_count} recentSeries={catalog.recently_watched_series} onRefreshRecent={refreshRecentSeries} onManualImport={() => (manualOpen = true)} onAccount={() => (accountOpen = true)} onWebDav={() => (webDavOpen = true)} {onLogout} />
   <main class="workspace">
+    <ProviderSyncPanel {catalog} {syncingProviders} disabled={recentRefreshing || refreshing.size > 0} onSync={syncCatalog} />
     <CatalogMetrics {catalog} bind:policyFilter />
     <section class="catalog-panel" bind:this={catalogPanel}>
-      <CatalogToolbar bind:layoutMode bind:mediaTypeFilter bind:sortOrder bind:query resultCount={sortedMedia.length} />
+      <CatalogToolbar bind:layoutMode bind:mediaTypeFilter bind:providerFilter bind:sortOrder bind:query resultCount={sortedMedia.length} />
       {#if pageError}<div class="page-error" role="alert">{pageError}</div>{/if}
       {#if pageNotice}<div class="page-notice" role="status">{pageNotice}</div>{/if}
       <MediaCatalog media={visibleMedia} {layoutMode} {selected} {updating} {refreshing} refreshDisabled={syncing || recentRefreshing} {bulkBusy} onSelectionChange={(value) => (selected = value)} onUpdatePolicy={updatePolicy} onRefresh={refreshMedia} onOpenDetail={openDetail} onConfigureRoute={openPlaybackRoutes} onBulkPolicy={bulkPolicy} onDelete={() => (deleteConfirm = true)} onResetFilters={resetFilters} />

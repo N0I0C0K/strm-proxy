@@ -7,7 +7,6 @@
   export let itemRefreshing = false
   export let recentSeriesCount = 0
   export let recentSeries: string[] = []
-  export let onSync: () => void
   export let onRefreshRecent: () => void
   export let onManualImport: () => void
   export let onLogout: () => void
@@ -48,16 +47,6 @@
         {:else}
           <span>暂无观看记录。通过本服务开始播放后会出现在这里。</span>
         {/if}
-      </div>
-    </div>
-    <div class="sync-tooltip-anchor">
-      <Button.Root class="sync-button" onclick={onSync} disabled={syncing || recentRefreshing || itemRefreshing} aria-describedby="sync-tooltip">
-        <RefreshCw class={syncing ? 'spin' : undefined} size={17} />{syncing ? '正在同步' : '立即同步'}
-      </Button.Root>
-      <div class="action-tooltip sync-tooltip" id="sync-tooltip" role="tooltip">
-        <strong>同步自动片库</strong>
-        <span>重新发现电影和电视剧，加入新条目，更新已发现条目的信息及可获取的分集。</span>
-        <span>本次未发现的自动条目会退出片库；近 30 天看过的电视剧会保留，人工保留和隐藏策略不变。</span>
       </div>
     </div>
   </div>

@@ -1,4 +1,4 @@
-import type { CatalogCounts, Media, MediaTypeFilter, Policy } from './types'
+import type { CatalogCounts, Media, MediaTypeFilter, Policy, ProviderFilter } from './types'
 
 export function filterAndSortMedia(
   media: Media[],
@@ -6,17 +6,19 @@ export function filterAndSortMedia(
   policyFilter: 'all' | Policy,
   mediaTypeFilter: MediaTypeFilter,
   sortOrder: string,
+  providerFilter: ProviderFilter = 'all',
 ): Media[] {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   return media
     .filter((item) => {
       const matchesPolicy = policyFilter === 'all' || item.policy === policyFilter
       const matchesType = mediaTypeFilter === 'all' || item.kind === mediaTypeFilter
+      const matchesProvider = providerFilter === 'all' || item.provider === providerFilter
       const matchesQuery =
         !normalizedQuery ||
         item.title.toLocaleLowerCase().includes(normalizedQuery) ||
         String(item.year ?? '').includes(normalizedQuery)
-      return matchesPolicy && matchesType && matchesQuery
+      return matchesPolicy && matchesType && matchesProvider && matchesQuery
     })
     .sort((left, right) => {
       const direction = sortOrder.endsWith('asc') ? 1 : -1

@@ -67,6 +67,27 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .workspace,
 .page-heading { width: min(1240px, calc(100% - 44px)); margin-inline: auto; }
 .workspace { padding: 0 0 80px; }
+.provider-sync-panel { margin-bottom: 22px; }
+.provider-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+.provider-panel-heading h2 { margin: 0 0 4px; font-size: 15px; }
+.provider-panel-heading p { margin: 0; font-size: 12px; color: var(--muted); }
+.provider-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.provider-card { min-width: 0; padding: 17px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.provider-card.provider-failed { border-color: #e6c5b8; }
+.provider-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-card h3 { margin: 0 0 5px; font-size: 14px; }
+.provider-card-top p { margin: 0; font-size: 12px; color: var(--muted); }
+.provider-sync-meta { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 11px; }
+.provider-status { display: inline-flex; align-items: center; gap: 6px; }
+.provider-status i { width: 6px; height: 6px; border-radius: 50%; background: #aaa89e; }
+.provider-status.success { color: var(--green); }
+.provider-status.success i { background: var(--green); }
+.provider-status.syncing { color: var(--purple); }
+.provider-status.syncing i { background: var(--purple); }
+.provider-status.failed, .provider-status.partial { color: #a5492e; }
+.provider-status.failed i, .provider-status.partial i { background: #be674b; }
+.provider-sync-errors { margin-top: 10px; color: #a5492e; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.provider-sync-errors p { margin: 2px 0; }
 .page-heading { padding-top: 44px; display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 30px; }
 .page-heading h1 { margin: 0 0 8px; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(32px, 4vw, 46px); font-weight: 500; letter-spacing: -.04em; }
 .page-heading > div > p:last-child { margin: 0; color: var(--muted); font-size: 14px; }
@@ -111,12 +132,12 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 .account-form .dialog-actions { margin-top: 8px; }
 
 .catalog-panel { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--paper); box-shadow: 0 8px 35px rgba(38,37,33,.035); }
-.catalog-toolbar { min-height: 72px; padding: 14px 18px 14px 21px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
+.catalog-toolbar { min-height: 72px; padding: 14px 18px 14px 21px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
 .catalog-title { display: flex; align-items: baseline; gap: 9px; }
 .catalog-title h2 { margin: 0; font-size: 18px; }
 .catalog-title span { color: #999890; font-size: 12px; }
 .catalog-title .drag-hint { margin-left: 6px; display: inline-flex; align-items: center; gap: 5px; color: #8a756c; font-size: 10px; }
-.toolbar-tools { display: flex; align-items: center; gap: 9px; }
+.toolbar-tools { display: flex; flex-wrap: wrap; max-width: 100%; align-items: center; gap: 9px; }
 .layout-toggle { height: 39px; padding: 3px; display: flex; border: 1px solid #d9d8d0; border-radius: 8px; background: white; }
 .layout-toggle button { width: 31px; height: 31px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #999890; }
 .layout-toggle button:hover { color: #55544e; }
@@ -323,6 +344,10 @@ button:disabled, select:disabled { cursor: wait; opacity: .65; }
 }
 
 @media (max-width: 560px) {
+  .provider-cards { grid-template-columns: 1fr; }
+  .provider-panel-heading { align-items: flex-start; }
+  .provider-panel-heading .sync-all-button { width: auto; flex-shrink: 0; white-space: nowrap; padding: 9px 11px; }
+  .provider-card .sync-button { width: auto; padding: 10px 13px; }
   .topbar-actions { gap: 8px; }
   .dav-topbar-button { width: 35px; padding: 0; justify-content: center; }
   .dav-topbar-button span { display: none; }
