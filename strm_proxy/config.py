@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-
 DEFAULT_PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from html.parser import HTMLParser
 from typing import Literal
@@ -19,7 +19,6 @@ from .libvio import (
     parse_libvio_detail,
 )
 from .models import ResolverError
-
 
 logger = logging.getLogger(__name__)
 Kind = Literal["movie", "series"]
@@ -51,7 +50,7 @@ class _ListParser(HTMLParser):
         self.has_listing = False
         self.next_url: str | None = None
         self._list_depth = 0
-        self._card: dict | None = None
+        self._card: LibvioCard | None = None
         self._rating: list[str] | None = None
         self._anchor: tuple[str, list[str]] | None = None
 
@@ -79,12 +78,12 @@ class _ListParser(HTMLParser):
                     and not parsed.username
                     and parsed.port in {None, 443}
                 ):
-                    self._card = {
-                        "source_media_id": match[1],
-                        "title": values.get("title") or "",
-                        "source_url": f"https://{parsed.hostname}{parsed.path}",
-                        "rating": None,
-                    }
+                    self._card = LibvioCard(
+                        match[1],
+                        values.get("title") or "",
+                        f"https://{parsed.hostname}{parsed.path}",
+                        None,
+                    )
         elif tag == "span" and "pic-tag" in classes and self._card:
             self._rating = []
 
@@ -101,13 +100,13 @@ class _ListParser(HTMLParser):
             try:
                 value = float("".join(self._rating).strip())
                 if 0 <= value <= 10 and self._card:
-                    self._card["rating"] = value
+                    self._card = replace(self._card, rating=value)
             except ValueError:
                 pass
             self._rating = None
         if tag == "a":
             if self._card:
-                self.cards.append(LibvioCard(**self._card))
+                self.cards.append(self._card)
                 self._card = None
             if self._anchor and "".join(self._anchor[1]).strip() in {"下一页", "下页"}:
                 self.next_url = urljoin(self.origin, self._anchor[0])
@@ -182,11 +181,17 @@ class LibvioCatalog:
                 ),
                 return_exceptions=True,
             )
+            successful_groups: list[tuple[LibvioCard, ...]] = []
             for group in groups:
                 if isinstance(group, BaseException):
                     raise group
+                successful_groups.append(group)
             # Recent IDs win if a title also appears in a rated-year list.
-            cards = {card.source_media_id: card for group in reversed(groups) for card in group}
+            cards = {
+                card.source_media_id: card
+                for group in reversed(successful_groups)
+                for card in group
+            }
             if not cards:
                 raise ResolverError("LIBVIO 未发现任何影片，保留上次的自动片库")
             failures: list[str] = []

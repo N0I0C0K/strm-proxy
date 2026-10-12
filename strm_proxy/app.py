@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 import httpx
 import uvicorn
@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .admin import router as admin_router
-from .config import AppSettings
 from .catalog import XlysCatalog
+from .config import AppSettings
 from .database import CacheRepository, create_media_repository
 from .dependencies import AppServices, set_app_services
 from .library import MediaLibrary
@@ -27,7 +27,6 @@ from .routes import router as api_router
 from .segment_cache import SegmentCache
 from .webdav import router as webdav_router
 from .xlys import XlysResolver
-
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +84,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     )
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         logger.info("event=app_start")
         repository = create_media_repository(settings.database_path)
         repository.initialize_credentials(settings.dav.username, settings.dav.password)

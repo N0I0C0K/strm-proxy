@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from dataclasses import dataclass
 import hashlib
 import logging
 import re
+from collections import OrderedDict
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
 
 from .hls import iter_aligned_mpeg_ts, prepare_mpeg_ts_stream
 from .logging_utils import describe_http_error, safe_url_for_log
-
 
 logger = logging.getLogger(__name__)
 

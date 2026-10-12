@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
 from strm_proxy.catalog import CatalogEntry
-from strm_proxy.dependencies import get_app_services, get_resolver
 from strm_proxy.config import AppSettings
+from strm_proxy.dependencies import get_app_services, get_resolver
 from strm_proxy.detail import parse_xlys_detail
 from strm_proxy.models import ResolvedPage, StreamCandidate
 

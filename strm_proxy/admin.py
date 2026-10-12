@@ -28,7 +28,6 @@ from .logging_utils import describe_http_error
 from .models import ResolvedPage, ResolverError
 from .playback_selection import PlaybackCoordinator, PlaybackSelection
 
-
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
@@ -394,6 +393,7 @@ async def set_playback_route(
     resolved = await resolver.resolve_page(page_url)
     key = update.route_name
     direct_line: int | None = None
+    hls_line: int | None = None
     if key == "source:tos":
         if not resolved.tos_available:
             raise HTTPException(status_code=404, detail="TOS route is not available")
@@ -422,7 +422,10 @@ async def set_playback_route(
                 status_code=409,
                 detail=f"Playback route {key!r} is ambiguous",
             )
-        key = resolved.candidates[matches[0]].route_name
+        hls_line = matches[0]
+        route_name = resolved.candidates[hls_line].route_name
+        assert route_name is not None
+        key = route_name
     if media.media_type == MediaType.SERIES.value:
         playback.cache.remember_series_route(
             media.xlys_id,
@@ -434,9 +437,10 @@ async def set_playback_route(
     elif direct_line is not None:
         playback.cache.remember_manual_direct(resolved, "url3", direct_line)
     else:
+        assert hls_line is not None
         playback.cache.remember_hls(
             resolved,
-            matches[0],
+            hls_line,
             manual_override=True,
         )
     return _playback_routes(media, resolved, playback)
@@ -503,16 +507,6 @@ async def import_from_url(
         request.url,
         allowed_hosts=settings.allowed_page_hosts,
     )
-    common = {
-        "kind": detail.kind,
-        "xlys_id": detail.xlys_id,
-        "title": detail.title,
-        "year": detail.year,
-        "cover_url": detail.cover_url,
-        "available_episode_count": len(detail.episodes),
-        "declared_episode_count": detail.declared_episode_count,
-        "source_url": detail.source_url,
-    }
     if detail.kind == "series":
         repository.import_discovered_series(
             (
@@ -530,7 +524,14 @@ async def import_from_url(
         )
         repository.set_series_policy(detail.xlys_id, MoviePolicy.KEEP)
         return ManualImportResult(
-            **common,
+            kind=detail.kind,
+            xlys_id=detail.xlys_id,
+            title=detail.title,
+            year=detail.year,
+            cover_url=detail.cover_url,
+            available_episode_count=len(detail.episodes),
+            declared_episode_count=detail.declared_episode_count,
+            source_url=detail.source_url,
             imported=True,
             message="电视剧及当前分集已添加，并设为人工保留。",
             catalog=_catalog(repository.list_media(), library),
@@ -551,7 +552,14 @@ async def import_from_url(
     )
     repository.set_movie_policy(detail.xlys_id, MoviePolicy.KEEP)
     return ManualImportResult(
-        **common,
+        kind=detail.kind,
+        xlys_id=detail.xlys_id,
+        title=detail.title,
+        year=detail.year,
+        cover_url=detail.cover_url,
+        available_episode_count=len(detail.episodes),
+        declared_episode_count=detail.declared_episode_count,
+        source_url=detail.source_url,
         imported=True,
         message="影片已添加，并设为人工保留。",
         catalog=_catalog(repository.list_media(), library),

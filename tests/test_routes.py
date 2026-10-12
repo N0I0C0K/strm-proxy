@@ -11,7 +11,6 @@ from strm_proxy.config import AppSettings
 from strm_proxy.dependencies import get_app_services, get_http_client, get_resolver
 from strm_proxy.models import ResolvedPage, ResolverError, StreamCandidate
 
-
 PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
 
 

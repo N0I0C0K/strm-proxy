@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
 import re
 import secrets
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
 
 from .database import CacheRepository
+from .json_types import decode_json
 from .logging_utils import describe_http_error, safe_url_for_log
-from .models import ResolvedPage
-from .models import ResolverError
-from .xlys import XlysResolver, validate_page_url
-
+from .models import ResolvedPage, ResolverError
+from .xlys import DirectMediaResult, XlysResolver, validate_page_url
 
 PlaybackSource = Literal["hls", "tos", "member", "url3"]
 
@@ -581,11 +580,13 @@ def _hls_selection(
 
 
 def _decode_selection(value: str) -> PlaybackSelection:
-    data = json.loads(value)
+    data = decode_json(value)
     if not isinstance(data, dict):
         raise TypeError("Playback selection must be a JSON object")
     source = data.get("source")
-    if source not in {"hls", "tos", "member", "url3"}:
+    if not isinstance(source, str) or (
+        source != "hls" and source != "tos" and source != "member" and source != "url3"
+    ):
         raise ValueError("Playback selection has an invalid source")
     line = data.get("line")
     if line is not None and type(line) is not int:
@@ -619,13 +620,13 @@ def _decode_selection(value: str) -> PlaybackSelection:
 
 
 def _decode_failure(value: str) -> PlaybackFailure:
-    data = json.loads(value)
+    data = decode_json(value)
     if not isinstance(data, dict):
         raise TypeError("Playback failure must be a JSON object")
     errors = data.get("errors")
     if not isinstance(errors, list) or not all(isinstance(error, str) for error in errors):
         raise TypeError("Playback failure errors must be a string list")
-    return PlaybackFailure(errors=tuple(errors))
+    return PlaybackFailure(errors=tuple(error for error in errors if isinstance(error, str)))
 
 
 class PlaybackCoordinator:
@@ -772,16 +773,15 @@ class PlaybackCoordinator:
         else:
             errors = []
 
-        direct_sources = tuple(
-            source
-            for source, available in (
-                ("tos", resolved.tos_available),
-                ("member", resolved.member_token is not None),
-            )
-            if available
-        )
-        source_order = [source for source in direct_sources if source != failed_cached_source]
-        tasks: dict[str, asyncio.Task[object]] = {}
+        direct_sources: list[Literal["tos", "member"]] = []
+        if resolved.tos_available:
+            direct_sources.append("tos")
+        if resolved.member_token is not None:
+            direct_sources.append("member")
+        source_order: list[PlaybackSource] = [
+            source for source in direct_sources if source != failed_cached_source
+        ]
+        tasks: dict[PlaybackSource, asyncio.Task[int | DirectMediaResult]] = {}
         if source_order:
             benchmark_direct = (
                 getattr(
@@ -791,7 +791,9 @@ class PlaybackCoordinator:
                 )
                 or resolver.resolve_direct_media
             )
-            for direct_source in source_order:
+            for direct_source in direct_sources:
+                if direct_source == failed_cached_source:
+                    continue
                 tasks[direct_source] = asyncio.create_task(
                     benchmark_direct(page_url, direct_source),
                     name=f"playback-probe:{direct_source}:{page_url}",
@@ -816,7 +818,7 @@ class PlaybackCoordinator:
                 )
                 for source in source_order:
                     task = tasks.get(source)
-                    if task not in done:
+                    if task is None or task not in done:
                         continue
                     del tasks[source]
                     try:
@@ -833,7 +835,8 @@ class PlaybackCoordinator:
                         continue
 
                     if source == "hls":
-                        selected_line = int(probe_result)
+                        assert isinstance(probe_result, int)
+                        selected_line = probe_result
                         selection = self.cache.remember_hls(
                             resolved,
                             selected_line,
@@ -845,11 +848,13 @@ class PlaybackCoordinator:
                             cache_hit=False,
                         )
 
-                    _direct_resolved, media_url = probe_result  # type: ignore[misc]
-                    self.cache.remember_direct(resolved, source)  # type: ignore[arg-type]
+                    assert source == "tos" or source == "member"
+                    assert isinstance(probe_result, tuple)
+                    _direct_resolved, media_url = probe_result
+                    self.cache.remember_direct(resolved, source)
                     return PlaybackResult(
                         resolved=resolved,
-                        selection=PlaybackSelection(source=source),  # type: ignore[arg-type]
+                        selection=PlaybackSelection(source=source),
                         media_url=media_url,
                         cache_hit=False,
                     )

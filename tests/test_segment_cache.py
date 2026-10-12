@@ -4,7 +4,6 @@ import httpx
 
 from strm_proxy.segment_cache import SegmentCache, SegmentPayload
 
-
 SEGMENT_PACKET = b"\x47" + b"\x00" * 187
 
 

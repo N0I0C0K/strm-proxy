@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import json
 import logging
 import re
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Literal
+from typing import Literal, TypedDict
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -18,8 +17,8 @@ from Crypto.Util.Padding import unpad
 
 from .cache import TTLCache
 from .detail import parse_season_number
+from .json_types import JSONValue, decode_json, decode_json_prefix
 from .models import ResolverError
-
 
 LIBVIO_HOSTS = frozenset({"www.libvio.lat", "libvio.lat"})
 SMARTPLAY_API = "https://hd.ticktockwow.com/smartplay-cache/api/webvideo_ty.php"
@@ -55,11 +54,25 @@ def validate_page_url(url: str) -> str:
             and not parsed.fragment
             and (DETAIL_PATH.fullmatch(parsed.path) or PLAY_PATH.fullmatch(parsed.path))
         )
-    except ValueError:
-        valid = False
+    except ValueError as exc:
+        raise ResolverError("Use a LIBVIO HTTPS detail or play page URL") from exc
     if not valid:
         raise ResolverError("Use a LIBVIO HTTPS detail or play page URL")
     return f"https://{parsed.hostname}{parsed.path}"
+
+
+class RouteEpisode(TypedDict):
+    label: str
+    play_path: str
+    public_media_id: str
+    sid: int
+    nid: int
+
+
+class DetailRoute(TypedDict):
+    label: str
+    type: Literal["online", "download"]
+    episodes: list[RouteEpisode]
 
 
 class DetailParser(HTMLParser):
@@ -73,7 +86,7 @@ class DetailParser(HTMLParser):
         self.douban_rating: float | None = None
         self._info_text: list[str] | None = None
         self._rating_text: list[str] | None = None
-        self.routes: list[dict] = []
+        self.routes: list[DetailRoute] = []
         self._heading = ""
         self._capture: str | None = None
         self._text: list[str] = []
@@ -250,25 +263,24 @@ def parse_libvio_detail(
     )
 
 
-def player_data(html: str) -> dict:
+def player_data(html: str) -> dict[str, JSONValue]:
     match = re.search(r"\bvar\s+player_aaaa\s*=\s*", html)
     if not match:
         raise ResolverError("LIBVIO player data was not found")
-    value, _ = json.JSONDecoder().raw_decode(html[match.end() :])
+    value = decode_json_prefix(html[match.end() :])
     if not isinstance(value, dict):
         raise ResolverError("LIBVIO player data is invalid")
     return value
 
 
-def constant(html: str, name: str):
+def constant(html: str, name: str) -> JSONValue:
     match = re.search(rf"\bconst\s+{re.escape(name)}\s*=\s*", html)
     if not match:
         raise ResolverError(f"LIBVIO player is missing {name}")
-    value, _ = json.JSONDecoder().raw_decode(html[match.end() :])
-    return value
+    return decode_json_prefix(html[match.end() :])
 
 
-def decrypt_url(value: str, timestamp: str) -> str:
+def decrypt_url(value: JSONValue, timestamp: JSONValue) -> str:
     if not isinstance(value, str):
         raise ResolverError("LIBVIO video URL is invalid")
     if value.startswith(("https://", "http://")):
@@ -347,7 +359,9 @@ class LibvioResolver:
             parsed = urlsplit(page_url)
             play_match = PLAY_PATH.fullmatch(parsed.path)
             detail_match = DETAIL_PATH.fullmatch(parsed.path)
-            media_id = (play_match or detail_match)[1]
+            media_match = play_match or detail_match
+            assert media_match is not None
+            media_id = media_match[1]
             origin = f"https://{parsed.hostname}"
             detail_url = f"{origin}/detail/{media_id}.html"
             response = await self.client.get(detail_url)
@@ -356,7 +370,7 @@ class LibvioResolver:
             detail.feed(response.text)
             if not detail.title:
                 raise ResolverError("LIBVIO detail page did not contain a title")
-            choices = []
+            choices: list[tuple[str, RouteEpisode]] = []
             for route in detail.routes:
                 if route["type"] != "online":
                     continue
@@ -370,7 +384,7 @@ class LibvioResolver:
                     choices.append((route["label"], episode))
             if not choices:
                 raise ResolverError("LIBVIO page did not contain a matching online episode")
-            errors = []
+            errors: list[str] = []
             for route_name, episode in choices:
                 try:
                     result = await self._resolve_episode(
@@ -389,12 +403,15 @@ class LibvioResolver:
             raise ResolverError("LIBVIO online routes failed: " + "; ".join(errors))
 
     async def _resolve_episode(
-        self, page_url: str, origin: str, title: str, route_name: str, episode: dict
+        self, page_url: str, origin: str, title: str, route_name: str, episode: RouteEpisode
     ) -> LibvioPlayback:
         play_url = urljoin(origin, episode["play_path"])
         response = await self.client.get(play_url)
         response.raise_for_status()
         player = player_data(response.text)
+        player_url = player.get("url")
+        if not isinstance(player_url, str):
+            raise ResolverError("LIBVIO player URL is invalid")
         source = str(player["from"])
         if not re.fullmatch(r"[\w-]+", source):
             raise ResolverError("LIBVIO player adapter is invalid")
@@ -405,13 +422,14 @@ class LibvioResolver:
         iframe = await self.client.get(
             f"{origin}/static/player/artplayer/",
             params={
-                "url": player["url"],
+                "url": player_url,
                 "next": "",
             },
         )
         iframe.raise_for_status()
         timestamp = constant(iframe.text, "timestamp")
         lookup_scheme = "embedded"
+        values: list[JSONValue]
         if constant(iframe.text, "isSmartPlay"):
             now = int(time.time())
             body = {
@@ -441,7 +459,7 @@ class LibvioResolver:
                 )
                 lookup_scheme = "http"
             response.raise_for_status()
-            data = response.json()
+            data = decode_json(response.text)
             if (
                 not isinstance(data, dict)
                 or data.get("code") not in {None, 0, 200}
@@ -450,7 +468,14 @@ class LibvioResolver:
                 raise ResolverError("LIBVIO video lookup did not return a URL")
             values = [data["url"]]
         else:
-            values = [quality["url"] for quality in constant(iframe.text, "qualities")]
+            qualities = constant(iframe.text, "qualities")
+            if not isinstance(qualities, list):
+                raise ResolverError("LIBVIO video qualities are invalid")
+            values = []
+            for quality in qualities:
+                if not isinstance(quality, dict) or "url" not in quality:
+                    raise ResolverError("LIBVIO video quality URL is missing")
+                values.append(quality["url"])
         for value in values:
             media = decrypt_url(value, timestamp).split("/T/", 1)[0]
             for candidate in media.split("/fallbackurl/"):

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
-from collections.abc import AsyncIterator
 import logging
 import time
-from typing import Literal
+from collections.abc import AsyncIterator
+from dataclasses import asdict
+from typing import Literal, NoReturn
 from urllib.parse import urlparse
 
 import httpx
@@ -22,8 +22,8 @@ from .dependencies import (
     SettingsDep,
 )
 from .hls import iter_aligned_mpeg_ts, prepare_mpeg_ts_stream, rewrite_manifest
-from .logging_utils import safe_url_for_log
 from .libvio import is_libvio_url
+from .logging_utils import safe_url_for_log
 from .models import ResolverError
 from .playback_selection import PlaybackUnavailable
 from .segment_cache import SegmentClaim, SegmentPayload
@@ -40,7 +40,7 @@ async def health() -> dict[str, str]:
 @router.get("/resolve")
 async def resolve(
     resolver: ResolverDep, libvio: LibvioResolverDep, page_url: str = Query(...)
-) -> dict:
+) -> dict[str, object]:
     if is_libvio_url(page_url):
         return {"provider": "libvio", "source": "direct", **asdict(await libvio.resolve(page_url))}
     resolved = await resolver.resolve_page(page_url)
@@ -250,6 +250,7 @@ async def hls_manifest(
         raise
     playlist_id: str | None = None
     if settings.proxy_segments:
+        revision = selection.revision
         segment_endpoint = request.url_for("proxy_segment")
         playlist_id = segment_cache.register_playlist(
             page_url,
@@ -264,7 +265,7 @@ async def hls_manifest(
             parameters: dict[str, str | int] = {
                 "url": segment_url,
                 "referer": page_url,
-                "v": selection.revision,
+                "v": revision,
             }
             if playlist_id is not None:
                 parameters["playlist"] = playlist_id
@@ -531,7 +532,7 @@ def build_play_url(
     return str(url)
 
 
-def _raise_playback_unavailable(exc: PlaybackUnavailable) -> None:
+def _raise_playback_unavailable(exc: PlaybackUnavailable) -> NoReturn:
     raise HTTPException(
         status_code=503,
         detail={

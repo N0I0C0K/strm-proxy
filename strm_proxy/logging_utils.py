@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import secrets
 from urllib.parse import urlsplit
 
 import httpx
-
 
 RUN_ID = secrets.token_hex(4)
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s run=%(run_id)s %(message)s"
 LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
 LOG_FILE_BACKUP_COUNT = 5
+
+
+class _AppFileHandler(RotatingFileHandler):
+    _strm_proxy_log_file = True
 
 
 class _UvicornAccessQueryFilter(logging.Filter):
@@ -59,7 +62,7 @@ def _configure_file_handler(
     level: int,
 ) -> None:
     configured_handlers = [
-        handler for handler in logger.handlers if getattr(handler, "_strm_proxy_log_file", False)
+        handler for handler in logger.handlers if isinstance(handler, _AppFileHandler)
     ]
     if file_path is None:
         for handler in configured_handlers:
@@ -76,13 +79,12 @@ def _configure_file_handler(
         handler.close()
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(
+    handler = _AppFileHandler(
         target,
         maxBytes=LOG_FILE_MAX_BYTES,
         backupCount=LOG_FILE_BACKUP_COUNT,
         encoding="utf-8",
     )
-    handler._strm_proxy_log_file = True  # type: ignore[attr-defined]
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(handler)

@@ -1,43 +1,50 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from enum import StrEnum
 import hashlib
 import json
 import re
 import secrets
+import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
 
 from sqlalchemy import (
     CheckConstraint,
+    CursorResult,
     Date,
     DateTime,
     Engine,
-    ForeignKey,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     create_engine,
-    delete as sql_delete,
     event,
     func,
     inspect,
     select,
     text,
+)
+from sqlalchemy import (
+    delete as sql_delete,
+)
+from sqlalchemy import (
     update as sql_update,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 from .catalog import CatalogEntry, safe_media_name
 from .detail import XlysDetail, parse_season_number
-from .libvio import LibvioDetail, PLAY_PATH, is_libvio_url
+from .libvio import PLAY_PATH, LibvioDetail, is_libvio_url
+from .models import MediaKind, Provider
 
 
 class Base(DeclarativeBase):
@@ -81,11 +88,11 @@ class MediaItem(Base):
     )
 
     xlys_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    provider: Mapped[str] = mapped_column(
+    provider: Mapped[Provider] = mapped_column(
         String(32), nullable=False, default="xlys", server_default="xlys"
     )
     source_media_id: Mapped[str | None] = mapped_column(String(64))
-    media_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    media_type: Mapped[MediaKind] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     year: Mapped[int | None] = mapped_column(Integer)
     season_number: Mapped[int | None] = mapped_column(Integer)
@@ -646,7 +653,7 @@ class MediaRepository:
                     select(Episode).where(Episode.media_xlys_id == media.xlys_id)
                 )
             }
-            discovered = set()
+            discovered: set[int] = set()
             for item in detail.episodes:
                 discovered.add(item.source_index)
                 episode = existing.get(item.source_index)
@@ -670,13 +677,14 @@ class MediaRepository:
     def episode_counts(self) -> dict[int, int]:
         """Count stored episodes in one query for catalog cards."""
         with self._sessions() as session:
-            return dict(
-                session.execute(
+            return {
+                media_id: count
+                for media_id, count in session.execute(
                     select(Episode.media_xlys_id, func.count(Episode.id)).group_by(
                         Episode.media_xlys_id
                     )
-                ).all()
-            )
+                ).tuples()
+            }
 
     def mark_series_watched(self, page_url: str) -> None:
         """Record successful episode playback for a known series only."""
@@ -807,6 +815,7 @@ class MediaRepository:
                 .where(MediaItem.xlys_id.in_(xlys_ids))
                 .values(policy=policy.value)
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def delete_media(self, xlys_ids: tuple[int, ...]) -> int:
@@ -814,6 +823,7 @@ class MediaRepository:
             return 0
         with self._sessions.begin() as session:
             result = session.execute(sql_delete(MediaItem).where(MediaItem.xlys_id.in_(xlys_ids)))
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def get_movie(self, xlys_id: int) -> MediaItem | None:
@@ -854,6 +864,7 @@ class MediaRepository:
                 )
                 .values(policy=policy.value)
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def delete_movies(self, xlys_ids: tuple[int, ...]) -> int:
@@ -866,6 +877,7 @@ class MediaRepository:
                     MediaItem.media_type == MediaType.MOVIE.value,
                 )
             )
+            assert isinstance(result, CursorResult)
             return result.rowcount
 
     def has_series(self) -> bool:
@@ -1090,7 +1102,9 @@ def create_media_repository(database_path: str) -> MediaRepository:
         )
 
     @event.listens_for(engine, "connect")
-    def configure_sqlite(dbapi_connection, _connection_record) -> None:
+    def configure_sqlite(
+        dbapi_connection: sqlite3.Connection, _connection_record: ConnectionPoolEntry
+    ) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
         cursor.execute("PRAGMA busy_timeout = 5000")

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
 from strm_proxy.catalog import XlysCatalog
-from strm_proxy.config import AppSettings, DEFAULT_USER_AGENT
+from strm_proxy.config import DEFAULT_USER_AGENT, AppSettings
 from strm_proxy.dependencies import get_app_services
 
 

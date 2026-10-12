@@ -6,7 +6,6 @@ import pytest
 from strm_proxy.detail import fetch_xlys_detail, parse_xlys_detail
 from strm_proxy.models import ResolverError
 
-
 SERIES_HTML = """
 <div class="movie-header">
   <div class="movie-poster"><img src="https://img.example/show.jpg"></div>

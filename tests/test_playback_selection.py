@@ -1,14 +1,13 @@
 import asyncio
+import json
 from collections.abc import Iterator
 from datetime import datetime, timezone
-import json
 
 import pytest
 
 from strm_proxy.database import CacheRepository, create_media_repository
 from strm_proxy.models import ResolvedPage, StreamCandidate
 from strm_proxy.playback_selection import PlaybackCoordinator, PlaybackSelectionCache
-
 
 PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
 

@@ -8,9 +8,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from .models import ResolverError
 from .logging_utils import safe_url_for_log
-
+from .models import ResolverError
 
 WRAPPER_PREFIX_BYTES = 3354
 DEFAULT_SEGMENT_ORIGIN = "https://vod.xl01.me/"
@@ -86,7 +85,7 @@ def first_playlist_uri(manifest: str) -> str | None:
     return None
 
 
-def find_mpeg_ts_offset(payload: bytes) -> int | None:
+def find_mpeg_ts_offset(payload: bytes | bytearray) -> int | None:
     """Find three aligned MPEG-TS packets, including inside a fake PNG."""
     required = TS_PACKET_SIZE * 2
     for offset in range(max(0, len(payload) - required)):

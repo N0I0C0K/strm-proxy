@@ -14,9 +14,9 @@ from strm_proxy.catalog import CatalogEntry
 from strm_proxy.config import AppSettings
 from strm_proxy.database import MoviePolicy, create_media_repository
 from strm_proxy.dependencies import get_app_services
+from strm_proxy.library import MediaLibrary
 from strm_proxy.libvio import parse_libvio_detail
 from strm_proxy.libvio_catalog import LibvioCatalog, LibvioDiscovery, parse_libvio_list
-from strm_proxy.library import MediaLibrary
 from strm_proxy.models import ResolverError
 
 

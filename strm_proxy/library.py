@@ -13,20 +13,21 @@ import httpx
 from .catalog import CatalogEntry, XlysCatalog, safe_media_name
 from .database import CacheRepository, Episode, MediaItem, MediaRepository
 from .detail import XlysDetail, fetch_xlys_detail
-from .logging_utils import describe_http_error, safe_url_for_log
+from .json_types import decode_json
 from .libvio_catalog import LibvioCatalog
-from .models import ResolverError
-
+from .logging_utils import describe_http_error, safe_url_for_log
+from .models import MediaKind, ResolverError
+from .models import Provider as Provider
 
 logger = logging.getLogger(__name__)
 
 
-Provider = Literal["xlys", "libvio"]
+type SyncStatus = Literal["idle", "syncing", "success", "partial", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderSyncState:
-    status: Literal["idle", "syncing", "success", "partial", "failed"] = "idle"
+    status: SyncStatus = "idle"
     last_synced_at: datetime | None = None
     failures: tuple[str, ...] = ()
 
@@ -49,8 +50,9 @@ class MediaLibrary:
         self.last_discovery_failures: tuple[str, ...] = ()
         self._provider_locks = {"xlys": asyncio.Lock(), "libvio": asyncio.Lock()}
         self._sync_history = CacheRepository(repository.engine)
-        self.provider_sync_states = {
-            source: self._load_sync_state(source) for source in ("xlys", "libvio")
+        sources: tuple[Provider, ...] = ("xlys", "libvio")
+        self.provider_sync_states: dict[Provider, ProviderSyncState] = {
+            source: self._load_sync_state(source) for source in sources
         }
         self.recent_limit = catalog.recent_limit
         self._detail_concurrency = detail_concurrency
@@ -62,22 +64,30 @@ class MediaLibrary:
         raw = self._sync_history.get(f"provider-sync:{provider}")
         if raw:
             try:
-                value = json.loads(raw)
-                if value["status"] in {"success", "partial", "failed"}:
+                value = decode_json(raw)
+                if not isinstance(value, dict):
+                    raise TypeError("Sync state must be an object")
+                status = value["status"]
+                timestamp = value["last_synced_at"]
+                if (
+                    isinstance(status, str)
+                    and (status == "success" or status == "partial" or status == "failed")
+                    and isinstance(timestamp, str)
+                ):
                     failures = value["failures"]
                     if isinstance(failures, list) and all(
                         isinstance(item, str) for item in failures
                     ):
                         return ProviderSyncState(
-                            value["status"],
-                            datetime.fromisoformat(value["last_synced_at"]),
-                            tuple(failures),
+                            status,
+                            datetime.fromisoformat(timestamp),
+                            tuple(item for item in failures if isinstance(item, str)),
                         )
             except (ValueError, KeyError, TypeError):
                 pass
         return ProviderSyncState()
 
-    def _finish_sync(self, provider: str, state: ProviderSyncState) -> None:
+    def _finish_sync(self, provider: Provider, state: ProviderSyncState) -> None:
         self.provider_sync_states[provider] = state
         self._sync_history.set(
             f"provider-sync:{provider}",
@@ -174,9 +184,9 @@ class MediaLibrary:
         return visible
 
     async def _sync_kinds(
-        self, kinds: tuple[str, ...], *, provider: Provider | None = None
+        self, kinds: tuple[MediaKind, ...], *, provider: Provider | None = None
     ) -> None:
-        async def sync_xlys(kind: str) -> tuple[str, ...]:
+        async def sync_xlys(kind: MediaKind) -> tuple[str, ...]:
             if kind == "movie":
                 entries = await self.catalog.discover_movies()
                 self.repository.import_discovered_movies(entries, replace_auto=True)
@@ -188,7 +198,7 @@ class MediaLibrary:
                 self.repository.import_discovered_series(entries, details, replace_auto=True)
             return ()
 
-        async def sync_libvio(kind: str) -> tuple[str, ...]:
+        async def sync_libvio(kind: MediaKind) -> tuple[str, ...]:
             assert self.libvio_catalog is not None
             result = await (
                 self.libvio_catalog.discover_movies()
@@ -200,12 +210,14 @@ class MediaLibrary:
             )
             return result.failures
 
-        available = ("xlys", "libvio") if self.libvio_catalog is not None else ("xlys",)
+        available: tuple[Provider, ...] = (
+            ("xlys", "libvio") if self.libvio_catalog is not None else ("xlys",)
+        )
         if provider is not None and provider not in available:
             raise ResolverError("该供应商未启用")
         selected = (provider,) if provider is not None else available
 
-        async def sync_provider(source: str) -> tuple[int, tuple[str, ...]]:
+        async def sync_provider(source: Provider) -> tuple[int, tuple[str, ...]]:
             async with self._provider_locks[source]:
                 previous = self.provider_sync_states[source]
                 self.provider_sync_states[source] = ProviderSyncState(
@@ -218,7 +230,7 @@ class MediaLibrary:
                 )
                 failures: list[str] = []
                 completed = 0
-                for kind, result in zip(kinds, results):
+                for kind, result in zip(kinds, results, strict=True):
                     if isinstance(result, (httpx.HTTPError, ResolverError)):
                         label = "电影" if kind == "movie" else "电视剧"
                         failures.append(f"{name}{label}发现失败，已保留原有条目")
@@ -238,7 +250,9 @@ class MediaLibrary:
                     else:
                         completed += 1
                         failures.extend(result)
-                status = "success" if not failures else "partial" if completed else "failed"
+                status: SyncStatus = (
+                    "success" if not failures else "partial" if completed else "failed"
+                )
                 self._finish_sync(
                     source,
                     ProviderSyncState(
@@ -252,13 +266,15 @@ class MediaLibrary:
         results = await asyncio.gather(
             *(sync_provider(source) for source in selected), return_exceptions=True
         )
+        successful_results: list[tuple[int, tuple[str, ...]]] = []
         for result in results:
             if isinstance(result, BaseException):
                 raise result
+            successful_results.append(result)
         self.last_discovery_failures = tuple(
-            failure for _, failures in results for failure in failures
+            failure for _, failures in successful_results for failure in failures
         )
-        if not any(completed for completed, _ in results):
+        if not any(completed for completed, _ in successful_results):
             raise ResolverError("；".join(self.last_discovery_failures))
 
     def movie_play_url(self, movie: MediaItem) -> str:

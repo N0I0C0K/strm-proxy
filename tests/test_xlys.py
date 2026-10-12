@@ -18,7 +18,6 @@ from strm_proxy.xlys import (
     validate_page_url,
 )
 
-
 PAGE_URL = "https://www.xlys02.com/play/27062-0.htm"
 
 
@@ -126,6 +125,21 @@ def test_accepts_legacy_category_play_url() -> None:
     url = "https://www.xlys02.com/guoju/play/24358-0.htm"
 
     assert validate_page_url(url, ("www.xlys02.com",)) == url
+
+
+@pytest.mark.parametrize("payload", [None, [], "unavailable", {"code": 0, "data": []}, {"code": 0}])
+def test_resolver_rejects_malformed_lines_response(payload) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/lines":
+            return httpx.Response(200, json=payload, content=b"null" if payload is None else None)
+        return httpx.Response(200, text='var pid = 204486; var vod_name ="Test";')
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            with pytest.raises(ResolverError, match="/lines endpoint"):
+                await XlysResolver(client).resolve_page(PAGE_URL)
+
+    asyncio.run(scenario())
 
 
 def test_resolver_caches_page_and_manifest() -> None:

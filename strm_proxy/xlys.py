@@ -5,7 +5,7 @@ import hashlib
 import logging
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Literal
 from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
@@ -21,9 +21,9 @@ from .hls import (
     first_playlist_uri,
     rewrite_manifest,
 )
+from .json_types import decode_json
 from .logging_utils import describe_http_error, safe_url_for_log
 from .models import ResolvedPage, ResolverError, StreamCandidate
-
 
 _PID_PATTERN = re.compile(r"\bvar\s+pid\s*=\s*(\d+)\s*;")
 _TITLE_PATTERN = re.compile(r"\bvod_name\s*=\s*([\"'])(.*?)\1")
@@ -101,7 +101,7 @@ def parse_page(html: str, page_url: str) -> tuple[int, str | None]:
     return int(pid_match.group(1)), title
 
 
-def extract_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
+def extract_candidates(data: Mapping[str, object], origin: str) -> tuple[StreamCandidate, ...]:
     candidates: list[StreamCandidate] = []
     # Keep the original order for established fields, then include additional
     # numbered fields that the site may add for newer playback lines.
@@ -125,7 +125,9 @@ def extract_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
     return tuple(unique)
 
 
-def extract_direct_candidates(data: dict, origin: str) -> tuple[StreamCandidate, ...]:
+def extract_direct_candidates(
+    data: Mapping[str, object], origin: str
+) -> tuple[StreamCandidate, ...]:
     value = data.get("url3")
     if not isinstance(value, str):
         return ()
@@ -515,15 +517,18 @@ class XlysResolver:
             response.status_code,
         )
         try:
-            body = response.json()
+            body = decode_json(response.text)
         except ValueError as exc:
             raise ResolverError("The /lines endpoint did not return JSON") from exc
-        if body.get("code") != 0 or not isinstance(body.get("data"), dict):
+        if not isinstance(body, dict) or body.get("code") != 0:
             raise ResolverError(f"The /lines endpoint rejected the request: {body!r}")
-        candidates = extract_candidates(body["data"], origin)
-        direct_candidates = extract_direct_candidates(body["data"], origin)
-        tos_available = bool(body["data"].get("tos"))
-        raw_member_token = body["data"].get("ptoken")
+        data = body.get("data")
+        if not isinstance(data, dict):
+            raise ResolverError("The /lines endpoint returned invalid playback data")
+        candidates = extract_candidates(data, origin)
+        direct_candidates = extract_direct_candidates(data, origin)
+        tos_available = bool(data.get("tos"))
+        raw_member_token = data.get("ptoken")
         member_token = (
             str(raw_member_token).strip() if raw_member_token not in (None, "", False) else None
         )
@@ -569,7 +574,7 @@ class XlysResolver:
             response.status_code,
         )
         try:
-            body = response.json()
+            body = decode_json(response.text)
         except ValueError as exc:
             raise ResolverError("The /god endpoint did not return JSON") from exc
         media_url = body.get("url") if isinstance(body, dict) else None

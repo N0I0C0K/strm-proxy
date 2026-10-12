@@ -12,13 +12,12 @@ from Crypto.Util.Padding import pad
 from fastapi.testclient import TestClient
 
 from strm_proxy.app import create_app
-from strm_proxy.config import AppSettings, DavSettings
 from strm_proxy.catalog import CatalogEntry
+from strm_proxy.config import AppSettings, DavSettings
 from strm_proxy.database import MoviePolicy, create_media_repository
 from strm_proxy.dependencies import get_app_services, get_libvio_resolver
 from strm_proxy.libvio import DECRYPT_SALT, LibvioResolver, parse_libvio_detail, validate_page_url
 from strm_proxy.models import ResolverError
-
 
 DETAIL_URL = "https://www.libvio.lat/detail/5813847.html"
 PLAY_URL = "https://www.libvio.lat/play/5813847-4-1.html"
@@ -167,6 +166,57 @@ def test_malformed_lookup_response_reports_route_failure(payload):
             with pytest.raises(ResolverError, match="online routes failed"):
                 await resolver.resolve(DETAIL_URL)
         assert not site.media_requests
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("payload", [None, {}, [None], [{}], [{"url": 42}]])
+def test_malformed_embedded_qualities_reports_route_failure(payload):
+    async def check():
+        site = Site()
+
+        def control(request):
+            if request.url.path == "/static/player/artplayer/":
+                return httpx.Response(
+                    200,
+                    text=f'const isSmartPlay = false; const timestamp = "{TIMESTAMP}"; '
+                    f"const qualities = {json.dumps(payload)};",
+                )
+            return site.control(request)
+
+        resolver = LibvioResolver(
+            httpx.AsyncClient(transport=httpx.MockTransport(control)),
+            httpx.AsyncClient(transport=httpx.MockTransport(site.media)),
+        )
+        async with resolver.client, resolver.media_client:
+            with pytest.raises(ResolverError, match="online routes failed"):
+                await resolver.resolve(DETAIL_URL)
+        assert not site.media_requests
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("payload", [None, {}, 42])
+def test_invalid_player_url_stops_before_loading_adapter(payload):
+    async def check():
+        site = Site()
+
+        def control(request):
+            if request.url.path == urlsplit(PLAY_URL).path:
+                return httpx.Response(
+                    200, text="var player_aaaa=" + json.dumps({"from": "BBA", "url": payload}) + ";"
+                )
+            return site.control(request)
+
+        resolver = LibvioResolver(
+            httpx.AsyncClient(transport=httpx.MockTransport(control)),
+            httpx.AsyncClient(transport=httpx.MockTransport(site.media)),
+        )
+        async with resolver.client, resolver.media_client:
+            with pytest.raises(ResolverError, match="online routes failed"):
+                await resolver.resolve(DETAIL_URL)
+        assert not site.media_requests
+        assert not any(request.url.path.startswith("/static/") for request in site.requests)
 
     asyncio.run(check())
 

@@ -13,7 +13,6 @@ import httpx
 
 from .models import ResolverError
 
-
 _DETAIL_PATH_PATTERN = re.compile(r"^/([^/?#]+)/(\d+)\.htm$")
 _PLAY_PATH_PATTERN = re.compile(r"^/(?:[^/?#]+/)?play/(\d+)-(\d+)\.htm$")
 _TITLE_YEAR_PATTERN = re.compile(r"\s*\(((?:19|20)\d{2})\)\s*$")
@@ -221,6 +220,7 @@ async def fetch_xlys_detail(
         raise ResolverError("请输入本站的 HTTPS 影片详情页网址")
 
     normalized_url = f"https://{parsed.hostname}{parsed.path}"
+    response: httpx.Response | None = None
     for attempt in range(3):
         response = await client.get(
             normalized_url,
@@ -229,6 +229,7 @@ async def fetch_xlys_detail(
         if response.status_code != 429 or attempt == 2:
             break
         await asyncio.sleep(1.5 * (attempt + 1))
+    assert response is not None
     response.raise_for_status()
     return parse_xlys_detail(
         response.text,

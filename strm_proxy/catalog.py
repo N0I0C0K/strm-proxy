@@ -14,7 +14,6 @@ from .cache import TTLCache
 from .logging_utils import describe_http_error
 from .models import ResolverError
 
-
 _DETAIL_PATH_PATTERN = re.compile(r"^/[^/?#]+/(\d+)\.htm$")
 _YEAR_PATTERN = re.compile(r"^\s*((?:19|20)\d{2})")
 _RATING_PATTERN = re.compile(r"\d+(?:\.\d+)?")
@@ -311,6 +310,7 @@ class XlysCatalog:
             remaining = self.request_interval_seconds - (loop.time() - self._last_request_at)
             if remaining > 0:
                 await asyncio.sleep(remaining)
+            response: httpx.Response | None = None
             for attempt in range(6):
                 try:
                     response = await self.client.get(
@@ -329,6 +329,7 @@ class XlysCatalog:
                 retry_after = response.headers.get("retry-after")
                 delay = float(retry_after) if retry_after else 4.0 * (attempt + 1)
                 await asyncio.sleep(min(delay, 20.0))
+            assert response is not None
             response.raise_for_status()
         return parse_catalog_page(response.text, self.origin)
 
